@@ -11,7 +11,7 @@ mod socks5;
 struct Args {
     /// iroh ticket to connect to (client mode)
     #[arg(short, long)]
-    ticket: Option<String>,
+    node_id: Option<String>,
     #[arg(short, long)]
     listen: Option<String>,
 }
@@ -27,7 +27,7 @@ async fn main() -> Result<()> {
 
     let args = Args::parse();
     match args.listen {
-        Some(listen) => client::run(listen, args.ticket).await,
+        Some(listen) => client::run(listen, args.node_id).await,
         None => server::run().await
     }
 }

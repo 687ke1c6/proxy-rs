@@ -2,8 +2,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use iroh::{Endpoint, EndpointAddr, endpoint::presets};
-use iroh_tickets::endpoint::EndpointTicket;
+use iroh::{Endpoint, EndpointId, address_lookup::{self, PkarrPublisher}, endpoint::presets};
 use std::path::Path;
 use tokio::net::{TcpListener, TcpStream};
 use tracing::{error, info, warn};
@@ -19,25 +18,21 @@ enum ProxyType {
 
 const PATH: &str = ".node-id";
 
-fn load_key_from_file() -> Result<String> {
+fn load_node_id_from_file() -> Result<String> {
     if Path::new(PATH).exists() {
-        let hex = std::fs::read_to_string(PATH)
-            .with_context(|| format!("failed to read key file: {PATH}"))?;
-        let key = hex
-            .trim()
-            .parse()
-            .with_context(|| format!("failed to parse key file: {PATH}"))?;
-        info!("Loaded secret key from {PATH}");
-        Ok(key)
+        let id = std::fs::read_to_string(PATH)
+            .with_context(|| format!("failed to read node id file: {PATH}"))?;
+        info!("Loaded server node id from {PATH}");
+        Ok(id.trim().to_string())
     } else {
-        panic!("Target node id not found.");
+        panic!("Server node id not found. Pass it as an argument on first run.");
     }
 }
 
-fn write_key_to_file(key: &str) -> Result<()> {
-    std::fs::write(PATH, key.to_string())
-        .with_context(|| format!("failed to write key file: {PATH}"))?;
-    info!("Generated new secret key, saved to {PATH}");
+fn write_node_id_to_file(id: &str) -> Result<()> {
+    std::fs::write(PATH, id)
+        .with_context(|| format!("failed to write node id file: {PATH}"))?;
+    info!("Saved server node id to {PATH}");
     Ok(())
 }
 
@@ -46,7 +41,6 @@ fn get_proxy_addr_and_type(url: &str) -> (ProxyType, String) {
         .split_once("://")
         .expect("Invalid format: must be protocol://host:port");
 
-    // Use strip_suffix to get rid of the ":" if it exists
     let typ = match prefix {
         "socks5" => ProxyType::Socks5,
         "http" => ProxyType::Http,
@@ -56,29 +50,30 @@ fn get_proxy_addr_and_type(url: &str) -> (ProxyType, String) {
     (typ, addr.to_string())
 }
 
-pub async fn run(listen_addr: String, server_ticket_str: Option<String>) -> Result<()> {
+pub async fn run(listen_addr: String, server_node_id_str: Option<String>) -> Result<()> {
     info!("Client mode");
 
     let (typ, addr) = get_proxy_addr_and_type(&listen_addr);
-
     info!("Proxy type: {:?}, Proxy address: {addr}", typ);
 
-    if let Some(id) = &server_ticket_str {
-        write_key_to_file(id).unwrap();
+    if let Some(id) = &server_node_id_str {
+        write_node_id_to_file(id)?;
     }
 
-    let key = server_ticket_str.unwrap_or_else(|| load_key_from_file().unwrap());
-    let ticket = EndpointTicket::from_str(&key).with_context(|| "Could not parse ticket")?;
-    let server_addr: EndpointAddr = ticket.into();
+    let raw = server_node_id_str.unwrap_or_else(|| load_node_id_from_file().unwrap());
+    let server_node_id = EndpointId::from_str(&raw).with_context(|| "Could not parse server node id")?;
 
     let endpoint = Arc::new(
         Endpoint::builder(presets::N0)
+            .address_lookup(PkarrPublisher::n0_dns())
+            .address_lookup(address_lookup::DnsAddressLookup::n0_dns())
             .bind()
             .await?,
     );
     endpoint.online().await;
 
-    info!("Client NodeId: {:?}", endpoint.addr());
+    info!("Client NodeId: {}", endpoint.id());
+    info!("Connecting to server NodeId: {server_node_id}");
 
     let listener = TcpListener::bind(&addr).await?;
     info!("Listening for SOCKS5 connections on {addr}");
@@ -90,9 +85,8 @@ pub async fn run(listen_addr: String, server_ticket_str: Option<String>) -> Resu
                 info!("Accepted SOCKS5 connection from {peer_addr}");
 
                 let ep = endpoint.clone();
-                let sa = server_addr.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = handle_socks5(tcp_stream, ep, sa).await {
+                    if let Err(e) = handle_socks5(tcp_stream, ep, server_node_id).await {
                         error!("Proxy error from {peer_addr}: {e:#}");
                     }
                 });
@@ -111,13 +105,13 @@ pub async fn run(listen_addr: String, server_ticket_str: Option<String>) -> Resu
 async fn handle_socks5(
     mut tcp: TcpStream,
     endpoint: Arc<Endpoint>,
-    server_addr: EndpointAddr,
+    server_node_id: EndpointId,
 ) -> Result<()> {
     let (host, port) = socks5::handshake(&mut tcp).await?;
     info!("SOCKS5 CONNECT -> {}:{}", host, port);
 
-    info!("Connecting to iroh server {:?}", server_addr);
-    let conn = endpoint.connect(server_addr, ALPN).await?;
+    info!("Connecting to iroh server {server_node_id}");
+    let conn = endpoint.connect(server_node_id, ALPN).await?;
     info!("Connected.");
 
     let (mut iroh_send, iroh_recv) = conn.open_bi().await?;

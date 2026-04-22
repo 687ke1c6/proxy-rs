@@ -1,6 +1,5 @@
 use anyhow::{Context, Result};
-use iroh::{Endpoint, SecretKey, endpoint::presets};
-use iroh_tickets::endpoint::EndpointTicket;
+use iroh::{Endpoint, SecretKey, address_lookup::{self, PkarrPublisher}, endpoint::presets};
 use std::{path::Path, str::FromStr};
 use tokio::net::TcpStream;
 use tracing::{error, info, warn};
@@ -31,15 +30,12 @@ pub async fn run() -> Result<()> {
     let endpoint = Endpoint::builder(presets::N0)
         .secret_key(secret_key)
         .alpns(vec![ALPN.to_vec()])
+        .address_lookup(PkarrPublisher::n0_dns())
+        .address_lookup(address_lookup::DnsAddressLookup::n0_dns())
         .bind()
         .await?;
 
-    let endpoint_addr = endpoint.addr();
-    let ticket = EndpointTicket::new(endpoint.addr());
-
-    // let node_id = endpoint.node_id();
-    info!("Server ticket: {ticket}");
-    info!("Server Endpoint: {:?}", endpoint_addr);
+    info!("Server NodeId: {}", endpoint.id());
     info!("Listening for iroh connections");
 
     loop {
@@ -65,8 +61,7 @@ pub async fn run() -> Result<()> {
 
 async fn handle_connection(incoming: iroh::endpoint::Incoming) -> Result<()> {
     let conn = incoming.await?;
-    let remote = String::from_utf8(conn.alpn().to_vec())?;
-    // let remote = conn.remote_node_id()?;
+    let remote = conn.remote_id();
     info!("Accepted iroh connection from {remote}");
 
     let (iroh_send, mut iroh_recv) = conn.accept_bi().await?;
