@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo build *)",
+      "Bash(grep -A3 'name = \"iroh\"$' /workspaces/iroh-proxy/Cargo.lock)",
+      "Bash(cargo doc *)",
+      "Bash(cargo check *)"
+    ]
+  }
+}
