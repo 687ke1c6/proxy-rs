@@ -1,10 +1,10 @@
 use anyhow::{Context, Result};
-use iroh::{Endpoint, SecretKey, address_lookup::{self, PkarrPublisher}, endpoint::presets};
+use iroh::{Endpoint, SecretKey, address_lookup::{self, PkarrPublisher}, endpoint::presets, protocol::Router};
 use std::{path::Path, str::FromStr};
-use tokio::net::TcpStream;
-use tracing::{error, info, warn};
+use tracing::info;
 
-use crate::proxy::{proxy_streams, read_target, ALPN};
+use crate::proxy::ALPN;
+use crate::protocols::proxy::ProxyServerProtocol;
 
 fn load_or_create_secret_key() -> Result<SecretKey> {
     let path = ".server.key";
@@ -27,54 +27,24 @@ fn load_or_create_secret_key() -> Result<SecretKey> {
 pub async fn run() -> Result<()> {
     info!("Server mode");
     let secret_key = load_or_create_secret_key()?;
+
     let endpoint = Endpoint::builder(presets::N0)
         .secret_key(secret_key)
-        .alpns(vec![ALPN.to_vec()])
         .address_lookup(PkarrPublisher::n0_dns())
         .address_lookup(address_lookup::DnsAddressLookup::n0_dns())
         .bind()
         .await?;
 
-    info!("Server NodeId: {}", endpoint.id());
+    let router = Router::builder(endpoint)
+        .accept(ALPN, ProxyServerProtocol)
+        .spawn();
+
+    info!("Server NodeId: {}", router.endpoint().id());
     info!("Listening for iroh connections");
 
-    loop {
-        tokio::select! {
-            incoming = endpoint.accept() => {
-                let Some(incoming) = incoming else { break };
-                tokio::spawn(async move {
-                    if let Err(e) = handle_connection(incoming).await {
-                        error!("Connection error: {e:#}");
-                    }
-                });
-            }
-            _ = tokio::signal::ctrl_c() => {
-                info!("Shutting down server");
-                break;
-            }
-        }
-    }
+    tokio::signal::ctrl_c().await?;
+    info!("Shutting down server");
+    router.shutdown().await?;
 
-    endpoint.close().await;
-    Ok(())
-}
-
-async fn handle_connection(incoming: iroh::endpoint::Incoming) -> Result<()> {
-    let conn = incoming.await?;
-    let remote = conn.remote_id();
-    info!("Accepted iroh connection from {remote}");
-
-    let (iroh_send, mut iroh_recv) = conn.accept_bi().await?;
-
-    let proxy_header = read_target(&mut iroh_recv).await?;
-    let tcp_target = format!("{}:{}", proxy_header.host, proxy_header.port);
-    info!("Connecting to TCP target {tcp_target}");
-
-    let tcp = TcpStream::connect(&tcp_target).await?;
-    let (tcp_read, tcp_write) = tcp.into_split();
-
-    proxy_streams(iroh_recv, iroh_send, tcp_read, tcp_write).await?;
-
-    warn!("Connection from {remote} to {tcp_target} closed");
     Ok(())
 }

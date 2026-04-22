@@ -2,6 +2,7 @@ use anyhow::Result;
 use clap::Parser;
 
 mod client;
+mod protocols;
 mod proxy;
 mod server;
 mod socks5;
