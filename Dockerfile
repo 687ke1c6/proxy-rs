@@ -13,8 +13,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN groupadd -g ${GID} rust && \
     useradd -m -u ${UID} -g ${GID} -s /bin/bash rust
 
+RUN mkdir /app && chown rust:rust /app
+
 USER rust
 
-RUN mkdir /app && cd /app && cargo install --path .
+WORKDIR /app
+COPY --chown=rust:rust . .
+
+RUN cargo install --path .
 
 CMD ["proxy-rs"]
