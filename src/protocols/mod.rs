@@ -1,1 +1,1 @@
-pub mod proxy;
+pub mod iroh_proxy_handler;

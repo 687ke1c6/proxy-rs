@@ -4,7 +4,7 @@ use std::{path::Path, str::FromStr};
 use tracing::info;
 
 use crate::proxy::ALPN;
-use crate::protocols::proxy::ProxyServerProtocol;
+use crate::protocols::iroh_proxy_handler::ProxyServerProtocol;
 
 fn load_or_create_secret_key() -> Result<SecretKey> {
     let path = ".server.key";

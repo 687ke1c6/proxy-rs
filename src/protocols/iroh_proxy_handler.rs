@@ -20,7 +20,7 @@ impl ProtocolHandler for ProxyServerProtocol {
         let tcp = TcpStream::connect(&tcp_target).await?;
         let (tcp_read, tcp_write) = tcp.into_split();
 
-        proxy_streams(iroh_recv, iroh_send, tcp_read, tcp_write).await.unwrap();
+        proxy_streams(iroh_recv, iroh_send, tcp_read, tcp_write).await.unwrap_or_default();
 
         warn!("Connection from {alpn} to {tcp_target} closed");
 

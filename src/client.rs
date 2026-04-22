@@ -116,7 +116,7 @@ async fn handle_socks5(
 
     let (mut iroh_send, iroh_recv) = conn.open_bi().await?;
 
-    let proxy_header = ProxyHeader { host, port, can_read: true, can_write: false, can_execute: false };
+    let proxy_header = ProxyHeader { version: 1, host, port, can_read: true, can_write: false, can_execute: false };
     write_target(&mut iroh_send, &proxy_header).await?;
 
     let (tcp_read, tcp_write) = tcp.into_split();
