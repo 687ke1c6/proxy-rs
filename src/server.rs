@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
-use iroh::{Endpoint, SecretKey};
-use std::path::Path;
+use iroh::{Endpoint, SecretKey, endpoint::presets};
+use iroh_tickets::endpoint::EndpointTicket;
+use std::{path::Path, str::FromStr};
 use tokio::net::TcpStream;
 use tracing::{error, info, warn};
 
@@ -11,15 +12,13 @@ fn load_or_create_secret_key() -> Result<SecretKey> {
     if Path::new(path).exists() {
         let hex = std::fs::read_to_string(path)
             .with_context(|| format!("failed to read key file: {path}"))?;
-        let key: SecretKey = hex
-            .trim()
-            .parse()
-            .with_context(|| format!("failed to parse key file: {path}"))?;
+        let key = SecretKey::from_str(&hex).with_context(|| "")?;
         info!("Loaded secret key from {path}");
         Ok(key)
     } else {
-        let key = SecretKey::generate(rand::rngs::OsRng);
-        std::fs::write(path, key.to_string())
+        let key = SecretKey::generate();
+        let ss = String::from_utf8(key.to_bytes().to_vec()).with_context(|| format!("failed to convert key to string: {path}"))?;
+        std::fs::write(path, ss)
             .with_context(|| format!("failed to write key file: {path}"))?;
         info!("Generated new secret key, saved to {path}");
         Ok(key)
@@ -29,15 +28,18 @@ fn load_or_create_secret_key() -> Result<SecretKey> {
 pub async fn run() -> Result<()> {
     info!("Server mode");
     let secret_key = load_or_create_secret_key()?;
-    let endpoint = Endpoint::builder()
+    let endpoint = Endpoint::builder(presets::N0)
         .secret_key(secret_key)
         .alpns(vec![ALPN.to_vec()])
-        .discovery_n0()
         .bind()
         .await?;
 
-    let node_id = endpoint.node_id();
-    info!("Server NodeId: {node_id}");
+    let endpoint_addr = endpoint.addr();
+    let ticket = EndpointTicket::new(endpoint.addr());
+
+    // let node_id = endpoint.node_id();
+    info!("Server ticket: {ticket}");
+    info!("Server Endpoint: {:?}", endpoint_addr);
     info!("Listening for iroh connections");
 
     loop {
@@ -63,7 +65,8 @@ pub async fn run() -> Result<()> {
 
 async fn handle_connection(incoming: iroh::endpoint::Incoming) -> Result<()> {
     let conn = incoming.await?;
-    let remote = conn.remote_node_id()?;
+    let remote = String::from_utf8(conn.alpn().to_vec())?;
+    // let remote = conn.remote_node_id()?;
     info!("Accepted iroh connection from {remote}");
 
     let (iroh_send, mut iroh_recv) = conn.accept_bi().await?;

@@ -9,9 +9,9 @@ mod socks5;
 #[derive(Parser)]
 #[command(about = "Iroh SOCKS5 proxy — server and client modes")]
 struct Args {
-    /// iroh node ID to connect to (client mode)
+    /// iroh ticket to connect to (client mode)
     #[arg(short, long)]
-    node_id: Option<String>,
+    ticket: Option<String>,
     #[arg(short, long)]
     listen: Option<String>,
 }
@@ -27,7 +27,7 @@ async fn main() -> Result<()> {
 
     let args = Args::parse();
     match args.listen {
-        Some(listen) => client::run(listen, args.node_id).await,
+        Some(listen) => client::run(listen, args.ticket).await,
         None => server::run().await
     }
 }

@@ -1,8 +1,10 @@
+use std::str::FromStr;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use iroh::{Endpoint, EndpointAddr, endpoint::presets};
+use iroh_tickets::endpoint::EndpointTicket;
 use std::path::Path;
-use iroh::{Endpoint, NodeAddr, NodeId};
 use tokio::net::{TcpListener, TcpStream};
 use tracing::{error, info, warn};
 
@@ -54,29 +56,29 @@ fn get_proxy_addr_and_type(url: &str) -> (ProxyType, String) {
     (typ, addr.to_string())
 }
 
-pub async fn run(listen_addr: String, server_node_id: Option<String>) -> Result<()> {
+pub async fn run(listen_addr: String, server_ticket_str: Option<String>) -> Result<()> {
     info!("Client mode");
 
     let (typ, addr) = get_proxy_addr_and_type(&listen_addr);
 
     info!("Proxy type: {:?}, Proxy address: {addr}", typ);
 
-    if let Some(id) = &server_node_id {
+    if let Some(id) = &server_ticket_str {
         write_key_to_file(id).unwrap();
     }
 
-    let key = server_node_id.unwrap_or_else(|| load_key_from_file().unwrap());
-
-    let node_id: NodeId = key.parse()?;
+    let key = server_ticket_str.unwrap_or_else(|| load_key_from_file().unwrap());
+    let ticket = EndpointTicket::from_str(&key).with_context(|| "Could not parse ticket")?;
+    let server_addr: EndpointAddr = ticket.into();
 
     let endpoint = Arc::new(
-        Endpoint::builder()
-            .discovery_n0()
+        Endpoint::builder(presets::N0)
             .bind()
             .await?,
     );
+    endpoint.online().await;
 
-    info!("Client NodeId: {}", endpoint.node_id());
+    info!("Client NodeId: {:?}", endpoint.addr());
 
     let listener = TcpListener::bind(&addr).await?;
     info!("Listening for SOCKS5 connections on {addr}");
@@ -88,8 +90,9 @@ pub async fn run(listen_addr: String, server_node_id: Option<String>) -> Result<
                 info!("Accepted SOCKS5 connection from {peer_addr}");
 
                 let ep = endpoint.clone();
+                let sa = server_addr.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = handle_socks5(tcp_stream, ep, node_id).await {
+                    if let Err(e) = handle_socks5(tcp_stream, ep, sa).await {
                         error!("Proxy error from {peer_addr}: {e:#}");
                     }
                 });
@@ -108,14 +111,13 @@ pub async fn run(listen_addr: String, server_node_id: Option<String>) -> Result<
 async fn handle_socks5(
     mut tcp: TcpStream,
     endpoint: Arc<Endpoint>,
-    server_node_id: NodeId,
+    server_addr: EndpointAddr,
 ) -> Result<()> {
     let (host, port) = socks5::handshake(&mut tcp).await?;
     info!("SOCKS5 CONNECT -> {}:{}", host, port);
 
-    let addr = NodeAddr::from(server_node_id);
-    info!("Connecting to iroh server {server_node_id}");
-    let conn = endpoint.connect(addr, ALPN).await?;
+    info!("Connecting to iroh server {:?}", server_addr);
+    let conn = endpoint.connect(server_addr, ALPN).await?;
     info!("Connected.");
 
     let (mut iroh_send, iroh_recv) = conn.open_bi().await?;
@@ -126,6 +128,6 @@ async fn handle_socks5(
     let (tcp_read, tcp_write) = tcp.into_split();
     proxy_streams(iroh_recv, iroh_send, tcp_read, tcp_write).await?;
 
-    warn!("Connection to {}:{} via {server_node_id} closed", proxy_header.host, proxy_header.port);
+    warn!("Connection to {}:{} via iroh server closed", proxy_header.host, proxy_header.port);
     Ok(())
 }

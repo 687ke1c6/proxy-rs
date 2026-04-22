@@ -4,7 +4,12 @@
       "Bash(cargo build *)",
       "Bash(grep -A3 'name = \"iroh\"$' /workspaces/iroh-proxy/Cargo.lock)",
       "Bash(cargo doc *)",
-      "Bash(cargo check *)"
+      "Bash(cargo check *)",
+      "Bash(cargo metadata *)",
+      "Bash(python3 -c \"import json,sys; pkgs=json.load\\(sys.stdin\\)['packages']; [print\\(p['name'], p['version'], p['manifest_path']\\) for p in pkgs if 'iroh' in p['name'].lower\\(\\)]\")",
+      "Read(//usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/iroh-tickets-0.5.0/**)",
+      "Read(//usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/iroh-tickets-0.5.0/src/**)",
+      "Read(//usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/iroh-0.98.1/src/**)"
     ]
   }
 }
