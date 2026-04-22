@@ -7,10 +7,11 @@ use std::path::Path;
 use tokio::net::{TcpListener, TcpStream};
 use tracing::{error, info, warn};
 
+use crate::http;
 use crate::proxy::{ALPN, ProxyHeader, proxy_streams, write_target};
 use crate::socks5;
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 enum ProxyType {
     Socks5,
     Http,
@@ -76,17 +77,21 @@ pub async fn run(listen_addr: String, server_node_id_str: Option<String>) -> Res
     info!("Connecting to server NodeId: {server_node_id}");
 
     let listener = TcpListener::bind(&addr).await?;
-    info!("Listening for SOCKS5 connections on {addr}");
+    info!("Listening for {:?} connections on {addr}", typ);
 
     loop {
         tokio::select! {
             result = listener.accept() => {
                 let (tcp_stream, peer_addr) = result?;
-                info!("Accepted SOCKS5 connection from {peer_addr}");
+                info!("Accepted {:?} connection from {peer_addr}", typ);
 
                 let ep = endpoint.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = handle_socks5(tcp_stream, ep, server_node_id).await {
+                    let result = match typ {
+                        ProxyType::Socks5 => handle_socks5(tcp_stream, ep, server_node_id).await,
+                        ProxyType::Http   => handle_http(tcp_stream, ep, server_node_id).await,
+                    };
+                    if let Err(e) = result {
                         error!("Proxy error from {peer_addr}: {e:#}");
                     }
                 });
@@ -99,6 +104,31 @@ pub async fn run(listen_addr: String, server_node_id_str: Option<String>) -> Res
     }
 
     endpoint.close().await;
+    Ok(())
+}
+
+async fn handle_http(
+    mut tcp: TcpStream,
+    endpoint: Arc<Endpoint>,
+    server_node_id: EndpointId,
+) -> Result<()> {
+    let (host, port, preamble) = http::handshake(&mut tcp).await?;
+    info!("HTTP proxy -> {}:{}", host, port);
+
+    let conn = endpoint.connect(server_node_id, ALPN).await?;
+    let (mut iroh_send, iroh_recv) = conn.open_bi().await?;
+
+    let proxy_header = ProxyHeader { version: 1, host: host.clone(), port, can_read: true, can_write: false, can_execute: false };
+    write_target(&mut iroh_send, &proxy_header).await?;
+
+    if !preamble.is_empty() {
+        iroh_send.write_all(&preamble).await?;
+    }
+
+    let (tcp_read, tcp_write) = tcp.into_split();
+    proxy_streams(iroh_recv, iroh_send, tcp_read, tcp_write).await?;
+
+    warn!("HTTP proxy connection to {}:{} via iroh server closed", host, port);
     Ok(())
 }
 

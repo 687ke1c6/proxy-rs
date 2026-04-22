@@ -2,13 +2,14 @@ use anyhow::Result;
 use clap::Parser;
 
 mod client;
+mod http;
 mod protocols;
 mod proxy;
 mod server;
 mod socks5;
 
 #[derive(Parser)]
-#[command(about = "Iroh SOCKS5 proxy — server and client modes")]
+#[command(about = "Iroh proxy (SOCKS5 + HTTP) — server and client modes")]
 struct Args {
     /// iroh ticket to connect to (client mode)
     #[arg(short, long)]
