@@ -1,15 +1,15 @@
 use std::str::FromStr;
 use std::sync::Arc;
-
 use anyhow::{Context, Result};
-use iroh::{Endpoint, EndpointId, address_lookup::{self, PkarrPublisher}, endpoint::presets};
-use std::path::Path;
+use iroh::{Endpoint, EndpointId, address_lookup::{self, PkarrPublisher}, endpoint::{presets}};
 use tokio::net::{TcpListener, TcpStream};
 use tracing::{error, info, warn};
 
-use crate::http;
-use crate::proxy::{ALPN, ProxyHeader, proxy_streams, write_target};
+use crate::protocols::{ack::Ack, file_send::{alpn::FILE_ALPN_V1, file_send_header::FileSendHeader}, proxy::{alpn::TCP_PROXY_ALPN_V1, proxy_header::ProxyHeader}};
+use crate::protocols::proxy::proxy_helpers::{proxy_streams};
 use crate::socks5;
+use crate::http;
+use crate::client::client_helpers::{load_node_id_from_file, write_node_id_to_file};
 
 #[derive(Debug, Clone, Copy)]
 enum ProxyType {
@@ -17,32 +17,12 @@ enum ProxyType {
     Http,
 }
 
-const PATH: &str = ".node-id";
-
-fn load_node_id_from_file() -> Result<String> {
-    if Path::new(PATH).exists() {
-        let id = std::fs::read_to_string(PATH)
-            .with_context(|| format!("failed to read node id file: {PATH}"))?;
-        info!("Loaded server node id from {PATH}");
-        Ok(id.trim().to_string())
-    } else {
-        panic!("Server node id not found. Pass it as an argument on first run.");
-    }
-}
-
-fn write_node_id_to_file(id: &str) -> Result<()> {
-    std::fs::write(PATH, id)
-        .with_context(|| format!("failed to write node id file: {PATH}"))?;
-    info!("Saved server node id to {PATH}");
-    Ok(())
-}
-
 fn get_proxy_addr_and_type(url: &str) -> (ProxyType, String) {
     let (prefix, addr) = url
         .split_once("://")
         .expect("Invalid format: must be protocol://host:port");
 
-    let typ = match prefix {
+    let typ = match prefix.to_lowercase().as_str() {
         "socks5" => ProxyType::Socks5,
         "http" => ProxyType::Http,
         _ => panic!("Unsupported proxy type: {}", prefix),
@@ -51,7 +31,65 @@ fn get_proxy_addr_and_type(url: &str) -> (ProxyType, String) {
     (typ, addr.to_string())
 }
 
-pub async fn run(listen_addr: String, server_node_id_str: Option<String>) -> Result<()> {
+pub async fn run_send_file(file_path: String, server_node_id_str: Option<String>, can_overwrite: bool) -> Result<()> {
+    info!("Client send file");
+
+    let full_path = std::fs::canonicalize(&file_path).with_context(|| format!("Failed to canonicalize path: {file_path}"))?;
+    let metadata = tokio::fs::metadata(&full_path).await?;
+    let file_size = metadata.len();
+
+    info!("{}, {file_size} bytes", full_path.display());
+
+    let path = std::path::Path::new(&full_path);
+
+    let file_name = path.file_name().and_then(|s| s.to_str()).unwrap().to_string();
+
+    let mut reader = tokio::fs::File::open(&full_path).await?;
+
+    let raw: String = server_node_id_str.unwrap_or_else(|| load_node_id_from_file().expect("Could not get node-id"));
+    let server_node_id = EndpointId::from_str(&raw).with_context(|| "Could not parse server node id")?;
+
+    let endpoint =
+    Endpoint::builder(presets::N0)
+        .address_lookup(PkarrPublisher::n0_dns())
+        .address_lookup(address_lookup::DnsAddressLookup::n0_dns())
+        .bind()
+        .await?;
+
+    info!("creating endpoint");
+    endpoint.online().await;
+    
+    let result = async {
+        info!("connecting");
+        let conn = endpoint.connect(server_node_id, FILE_ALPN_V1).await?;
+        info!("connected to server {server_node_id}");
+        let (mut iroh_send, mut iroh_recv) = conn.open_bi().await?;
+        info!("opened bidirectional stream");
+        info!("sending file header");
+        let file_send_header = FileSendHeader { file_name, file_size, version: 1, can_overwrite };
+        file_send_header.write_to_stream(&mut iroh_send).await?;
+        info!("sent file header, waiting for ack");
+        let file_send_header_ack = Ack::read_ack(&mut iroh_recv).await?;
+        if file_send_header_ack.ack != 0 {
+            anyhow::bail!("Server responded with error ack: {:?}", file_send_header_ack.msg);
+        }
+        let bytes = tokio::io::copy(&mut reader, &mut iroh_send).await?;
+        info!("Finished sending file: {bytes} bytes");
+        iroh_send.finish()?;
+        let file_send_ack = Ack::read_ack(&mut iroh_recv).await?;
+        if file_send_ack.ack != 0 {
+            anyhow::bail!("Server responded with error ack: {:?}", file_send_ack.msg);
+        }
+        Ok(())
+    }.await;
+
+    info!("shutting down p2p endpoint");
+    endpoint.close().await;
+
+    result
+}
+
+pub async fn run_tcp_client(listen_addr: String, server_node_id_str: Option<String>) -> Result<()> {
     info!("Client mode");
 
     let (typ, addr) = get_proxy_addr_and_type(&listen_addr);
@@ -61,7 +99,7 @@ pub async fn run(listen_addr: String, server_node_id_str: Option<String>) -> Res
         write_node_id_to_file(id)?;
     }
 
-    let raw = server_node_id_str.unwrap_or_else(|| load_node_id_from_file().unwrap());
+    let raw: String = server_node_id_str.unwrap_or_else(|| load_node_id_from_file().unwrap());
     let server_node_id = EndpointId::from_str(&raw).with_context(|| "Could not parse server node id")?;
 
     let endpoint = Arc::new(
@@ -115,11 +153,11 @@ async fn handle_http(
     let (host, port, preamble) = http::handshake(&mut tcp).await?;
     info!("HTTP proxy -> {}:{}", host, port);
 
-    let conn = endpoint.connect(server_node_id, ALPN).await?;
+    let conn = endpoint.connect(server_node_id, TCP_PROXY_ALPN_V1).await?;
     let (mut iroh_send, iroh_recv) = conn.open_bi().await?;
 
     let proxy_header = ProxyHeader { version: 1, host: host.clone(), port, can_read: true, can_write: false, can_execute: false };
-    write_target(&mut iroh_send, &proxy_header).await?;
+    proxy_header.write_to_stream(&mut iroh_send).await?;
 
     if !preamble.is_empty() {
         iroh_send.write_all(&preamble).await?;
@@ -141,13 +179,13 @@ async fn handle_socks5(
     info!("SOCKS5 CONNECT -> {}:{}", host, port);
 
     info!("Connecting to iroh server {server_node_id}");
-    let conn = endpoint.connect(server_node_id, ALPN).await?;
+    let conn = endpoint.connect(server_node_id, TCP_PROXY_ALPN_V1).await?;
     info!("Connected.");
 
     let (mut iroh_send, iroh_recv) = conn.open_bi().await?;
 
     let proxy_header = ProxyHeader { version: 1, host, port, can_read: true, can_write: false, can_execute: false };
-    write_target(&mut iroh_send, &proxy_header).await?;
+    proxy_header.write_to_stream(&mut iroh_send).await?;
 
     let (tcp_read, tcp_write) = tcp.into_split();
     proxy_streams(iroh_recv, iroh_send, tcp_read, tcp_write).await?;

@@ -1,0 +1,1 @@
+pub const FILE_ALPN_V1: &[u8] = b"proxy-rs/file/1";

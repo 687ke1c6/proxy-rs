@@ -1,3 +1,4 @@
 /target
-.server.key
+.server-key
 .node-id
+*_bak

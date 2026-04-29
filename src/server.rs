@@ -1,13 +1,13 @@
 use anyhow::{Context, Result};
 use iroh::{Endpoint, SecretKey, address_lookup::{self, PkarrPublisher}, endpoint::presets, protocol::Router};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use std::{path::Path, str::FromStr};
 use tracing::info;
 
-use crate::proxy::ALPN;
-use crate::protocols::iroh_proxy_handler::ProxyServerProtocol;
+use crate::protocols::{file_send::{alpn::FILE_ALPN_V1, file_send_protocol_handler::FileServerProtocolV1}, proxy::{alpn::TCP_PROXY_ALPN_V1, proxy_protocol_handler::ProxyServerProtocolV1}};
 
 fn load_or_create_secret_key() -> Result<SecretKey> {
-    let path = ".server.key";
+    let path = ".server-key";
     if Path::new(path).exists() {
         let hex = std::fs::read_to_string(path)
             .with_context(|| format!("failed to read key file: {path}"))?;
@@ -24,7 +24,7 @@ fn load_or_create_secret_key() -> Result<SecretKey> {
     }
 }
 
-pub async fn run() -> Result<()> {
+pub async fn run_server() -> Result<()> {
     info!("Server mode");
     let secret_key = load_or_create_secret_key()?;
 
@@ -36,7 +36,8 @@ pub async fn run() -> Result<()> {
         .await?;
 
     let router = Router::builder(endpoint)
-        .accept(ALPN, ProxyServerProtocol)
+        .accept(FILE_ALPN_V1, FileServerProtocolV1)
+        .accept(TCP_PROXY_ALPN_V1, ProxyServerProtocolV1)
         .spawn();
 
     info!("Server NodeId: {}", router.endpoint().id());
@@ -48,3 +49,14 @@ pub async fn run() -> Result<()> {
 
     Ok(())
 }
+
+pub async fn copy_bytes<A, B>(a: &mut A, b: &mut B, size: usize) -> anyhow::Result<()>
+    where 
+        A: tokio::io::AsyncRead + Unpin,
+        B: tokio::io::AsyncWrite + Unpin 
+    {
+        let mut buf = vec![0u8; size];
+        a.read_exact(&mut buf).await?;
+        b.write_all(&buf).await?;
+        Ok(())
+    }

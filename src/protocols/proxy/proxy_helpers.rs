@@ -1,50 +1,14 @@
 use anyhow::Result;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 
-pub const ALPN: &[u8] = b"proxy-rs/0";
+use crate::protocols::proxy::proxy_header::ProxyHeader;
 
 const FLAG_CAN_READ: u8    = 0b0000_0001;
 const FLAG_CAN_WRITE: u8   = 0b0000_0010;
 const FLAG_CAN_EXECUTE: u8 = 0b0000_0100;
 
-pub struct ProxyHeader {
-    pub version: u8,
-    pub host: String,
-    pub port: u16,
-    pub can_read: bool,
-    pub can_write: bool,
-    pub can_execute: bool,
-}
-
-fn pack_bits(bits: [bool; 8]) -> u8 {
-    let mut byte = 0;
-    for i in 0..8 {
-        if bits[i] {
-            // LSB first: index 0 maps to the 1s place (2^0)
-            byte |= 1 << i;
-        }
-    }
-    byte
-}
-
-/// Write a target host and port as a length-prefixed header.
-/// Format: u16 host_len | host bytes | u16 port (all big-endian)
-pub async fn write_target<W: AsyncWrite + Unpin>(stream: &mut W, header: &ProxyHeader) -> Result<()> {
-    stream.write_u8(header.version).await?;
-    let bytes = header.host.as_bytes();
-    stream.write_u16(bytes.len() as u16).await?;
-    stream.write_all(bytes).await?;
-    stream.write_u16(header.port).await?;
-    stream.write_u8(pack_bits([
-        header.can_read,
-        header.can_write,
-        header.can_execute,
-        false, false, false, false, false])).await?; // reserved for future flags
-    Ok(())
-}
-
-/// Read a target host and port written by `write_target`.
-pub async fn read_target<R: AsyncRead + Unpin>(stream: &mut R) -> Result<ProxyHeader> {
+/// Read a target host and port written by `write_proxy_header`.
+pub async fn read_proxy_header<R: AsyncRead + Unpin>(stream: &mut R) -> Result<ProxyHeader> {
     let version = stream.read_u8().await?;
     match version {
         1 => read_target_v1(stream).await,

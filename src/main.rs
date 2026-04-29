@@ -4,9 +4,10 @@ use clap::Parser;
 mod client;
 mod http;
 mod protocols;
-mod proxy;
 mod server;
 mod socks5;
+
+use client::client::{run_send_file, run_tcp_client};
 
 #[derive(Parser)]
 #[command(about = "Iroh proxy (SOCKS5 + HTTP) — server and client modes")]
@@ -16,6 +17,11 @@ struct Args {
     node_id: Option<String>,
     #[arg(short, long)]
     listen: Option<String>,
+    #[arg(short, long)]
+    file: Option<String>,
+    /// allow overwriting existing files
+    #[arg(short, long)]
+    overwrite: bool,
 }
 
 #[tokio::main]
@@ -28,8 +34,11 @@ async fn main() -> Result<()> {
         .init();
 
     let args = Args::parse();
-    match args.listen {
-        Some(listen) => client::run(listen, args.node_id).await,
-        None => server::run().await
+    if let Some(listen) = args.listen {
+        return run_tcp_client(listen, args.node_id).await.or_else(|e: anyhow::Error| anyhow::bail!("Failed to run TCP client: {e:#}"));
     }
+    if let Some(file) = args.file {
+        return run_send_file(file, args.node_id, args.overwrite).await.or_else(|e: anyhow::Error| anyhow::bail!("Failed to run file send: {e:#}"));
+    }
+    server::run_server().await
 }

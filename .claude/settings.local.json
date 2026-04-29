@@ -9,7 +9,8 @@
       "Bash(python3 -c \"import json,sys; pkgs=json.load\\(sys.stdin\\)['packages']; [print\\(p['name'], p['version'], p['manifest_path']\\) for p in pkgs if 'iroh' in p['name'].lower\\(\\)]\")",
       "Read(//usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/iroh-tickets-0.5.0/**)",
       "Read(//usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/iroh-tickets-0.5.0/src/**)",
-      "Read(//usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/iroh-0.98.1/src/**)"
+      "Read(//usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/iroh-0.98.1/src/**)",
+      "Bash(python3 -c \"import sys,json; m=json.load\\(sys.stdin\\); [print\\(p['name'],p['version'],p['manifest_path']\\) for p in m['packages'] if 'iroh' in p['name']]\")"
     ]
   }
 }
