@@ -4,7 +4,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use std::{path::Path, str::FromStr};
 use tracing::info;
 
-use crate::protocols::{file_send::{alpn::FILE_ALPN_V1, file_send_protocol_handler::FileServerProtocolV1}, proxy::{alpn::TCP_PROXY_ALPN_V1, proxy_protocol_handler::ProxyServerProtocolV1}};
+use crate::protocols::{file_send::{alpn::FILE_ALPN_V1, file_send_protocol_handler::FileServerProtocolV1}, ping::{alpn::PING_ALPN_V1, ping_protocol_handler::PingServerProtocolV1}, proxy::{alpn::TCP_PROXY_ALPN_V1, proxy_protocol_handler::ProxyServerProtocolV1}};
 
 fn load_or_create_secret_key() -> Result<SecretKey> {
     let path = ".server-key";
@@ -16,7 +16,7 @@ fn load_or_create_secret_key() -> Result<SecretKey> {
         Ok(key)
     } else {
         let key = SecretKey::generate();
-        let ss = String::from_utf8(key.to_bytes().to_vec()).with_context(|| format!("failed to convert key to string: {path}"))?;
+        let ss: String = key.to_bytes().iter().map(|b| format!("{b:02x}")).collect();
         std::fs::write(path, ss)
             .with_context(|| format!("failed to write key file: {path}"))?;
         info!("Generated new secret key, saved to {path}");
@@ -36,6 +36,7 @@ pub async fn run_server() -> Result<()> {
         .await?;
 
     let router = Router::builder(endpoint)
+        .accept(PING_ALPN_V1, PingServerProtocolV1)
         .accept(FILE_ALPN_V1, FileServerProtocolV1)
         .accept(TCP_PROXY_ALPN_V1, ProxyServerProtocolV1)
         .spawn();

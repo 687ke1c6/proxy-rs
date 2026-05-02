@@ -6,7 +6,15 @@
 	"dockerFile": "Dockerfile",
 	"mounts": [
 		"source=${env:HOME}/.ssh,target=/home/rust/.ssh,type=bind,consistency=cached"
-	]
+	],
+	"customizations": {
+		"vscode": {
+			"extensions": [
+				"rust-lang.rust-analyzer",
+				"Anthropic.claude-code"
+			]
+		}
+	}
 	// "image": "mcr.microsoft.com/devcontainers/rust:2-1-trixie"
 	// Use 'mounts' to make the cargo cache persistent in a Docker Volume.
 	// "mounts": [
