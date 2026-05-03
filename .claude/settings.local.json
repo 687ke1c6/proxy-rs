@@ -11,7 +11,10 @@
       "Read(//usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/iroh-tickets-0.5.0/src/**)",
       "Read(//usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/iroh-0.98.1/src/**)",
       "Bash(python3 -c \"import sys,json; m=json.load\\(sys.stdin\\); [print\\(p['name'],p['version'],p['manifest_path']\\) for p in m['packages'] if 'iroh' in p['name']]\")",
-      "Bash(python3 -c \"import sys,json; deps=json.load\\(sys.stdin\\)['packages'][0]['dependencies']; [print\\(d['name'], d.get\\('req',''\\)\\) for d in deps if 'iroh' in d['name']]\")"
+      "Bash(python3 -c \"import sys,json; deps=json.load\\(sys.stdin\\)['packages'][0]['dependencies']; [print\\(d['name'], d.get\\('req',''\\)\\) for d in deps if 'iroh' in d['name']]\")",
+      "Bash(cargo rustc *)",
+      "Bash(cargo install *)",
+      "Bash(cargo expand *)"
     ]
   }
 }

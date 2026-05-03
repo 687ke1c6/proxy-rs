@@ -2613,12 +2613,22 @@ dependencies = [
  "dialoguer",
  "iroh",
  "iroh-tickets",
+ "proxy-rs-derive",
  "rand 0.8.6",
  "serde",
  "serde_yaml",
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "proxy-rs-derive"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]

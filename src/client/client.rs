@@ -5,7 +5,7 @@ use iroh::{Endpoint, EndpointId, address_lookup::{self, PkarrPublisher}, endpoin
 use tokio::net::{TcpListener, TcpStream};
 use tracing::{error, info, warn};
 
-use crate::protocols::{ack::Ack, file_send::{alpn::FILE_ALPN_V1, file_send_header::FileSendHeader}, ping::{alpn::PING_ALPN_V1, ping_header::PingHeader}, proxy::{alpn::TCP_PROXY_ALPN_V1, proxy_header::ProxyHeader}};
+use crate::protocols::{ack::Ack, codec::StreamCodec, file_send::{alpn::FILE_ALPN_V1, file_send_header::FileSendHeader}, ping::{alpn::PING_ALPN_V1, ping_header::PingHeader}, proxy::{alpn::TCP_PROXY_ALPN_V1, proxy_header::ProxyHeader}};
 use crate::protocols::proxy::proxy_helpers::{proxy_streams};
 use crate::socks5;
 use crate::http;
@@ -38,11 +38,11 @@ async fn ping_server(endpoint: &Endpoint, server_node_id: EndpointId) -> Result<
     info!("Connected to server, opening stream");
     let (mut send, mut recv) = conn.open_bi().await.with_context(||"Could not get bi_directional channel")?;
     info!("Sending ping to server {server_node_id}");
-    PingHeader { version: 1, msg: MSG.to_string() }.write_to_stream(&mut send).await?;
+    PingHeader { version: 1, msg: MSG.to_string() }.encode(&mut send).await?;
     info!("Ping sent");
     send.finish()?;
     info!("Ping finished, waiting for pong response");
-    let pong = PingHeader::from_stream(&mut recv).await.with_context(||"Couldn't receive ping header")?;
+    let pong = PingHeader::decode(&mut recv).await.with_context(||"Couldn't receive ping header")?;
     info!("Received pong from server: {:?}", pong.msg);
     anyhow::ensure!(pong.msg == MSG, "ping/pong message mismatch: got {:?}", pong.msg);
     info!("Server is reachable (pong: {:?})", pong.msg);
@@ -80,23 +80,23 @@ pub async fn run_send_file(file_path: String, server_node_id_str: Option<String>
 
     let result = async {
         ping_server(&endpoint, server_node_id).await?;
-        info!("connecting");
         let conn = endpoint.connect(server_node_id, FILE_ALPN_V1).await?;
         info!("connected to server {server_node_id}");
         let (mut iroh_send, mut iroh_recv) = conn.open_bi().await?;
-        info!("opened bidirectional stream");
         info!("sending file header");
         let file_send_header = FileSendHeader { file_name, file_size, version: 1, can_overwrite };
-        file_send_header.write_to_stream(&mut iroh_send).await?;
+        file_send_header.encode(&mut iroh_send).await?;
         info!("sent file header, waiting for ack");
-        let file_send_header_ack = Ack::read_ack(&mut iroh_recv).await?;
+        let file_send_header_ack = Ack::decode(&mut iroh_recv).await?;
+        info!("ack received, {}", file_send_header_ack.msg);
         if file_send_header_ack.ack != 0 {
+            info!("Bad ack from server, {}", file_send_header_ack.msg);
             anyhow::bail!("Server responded with error ack: {:?}", file_send_header_ack.msg);
         }
         let bytes = tokio::io::copy(&mut reader, &mut iroh_send).await?;
         info!("Finished sending file: {bytes} bytes");
         iroh_send.finish()?;
-        let file_send_ack = Ack::read_ack(&mut iroh_recv).await?;
+        let file_send_ack = Ack::decode(&mut iroh_recv).await?;
         if file_send_ack.ack != 0 {
             anyhow::bail!("Server responded with error ack: {:?}", file_send_ack.msg);
         }

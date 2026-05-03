@@ -1,9 +1,13 @@
+[workspace]
+members = [".", "proxy-rs-derive"]
+
 [package]
 name = "proxy-rs"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+proxy-rs-derive = { path = "proxy-rs-derive" }
 iroh = "0.98"
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
