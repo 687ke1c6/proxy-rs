@@ -3,7 +3,7 @@ use std::time::Duration;
 use iroh::{endpoint::Connection, protocol::{AcceptError, ProtocolHandler}};
 use tokio::io::AsyncWriteExt;
 use tracing::{error, info};
-use crate::{protocols::codec::StreamCodec, server::copy_bytes};
+use crate::{protocols::codec::StreamCodec, stream_helpers::copy_bytes};
 
 use crate::protocols::{ack::Ack, file_send::file_send_header::FileSendHeader};
 

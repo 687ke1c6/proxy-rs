@@ -5,8 +5,7 @@ use iroh::{Endpoint, EndpointId, address_lookup::{self, PkarrPublisher}, endpoin
 use tokio::net::{TcpListener, TcpStream};
 use tracing::{error, info, warn};
 
-use crate::protocols::{ack::Ack, codec::StreamCodec, file_send::{alpn::FILE_ALPN_V1, file_send_header::FileSendHeader}, ping::{alpn::PING_ALPN_V1, ping_header::PingHeader}, proxy::{alpn::TCP_PROXY_ALPN_V1, proxy_header::ProxyHeaderV1}};
-use crate::protocols::proxy::proxy_helpers::{proxy_streams};
+use crate::{protocols::{ack::Ack, codec::StreamCodec, file_send::{alpn::FILE_ALPN_V1, file_send_header::FileSendHeader}, ping::{alpn::PING_ALPN_V1, ping_header::PingHeader}, proxy::{alpn::TCP_PROXY_ALPN_V1, proxy_header::ProxyHeaderV1}}, stream_helpers::proxy_streams};
 use crate::socks5;
 use crate::http;
 use crate::client::client_helpers::{load_node_id_from_file, write_node_id_to_file};

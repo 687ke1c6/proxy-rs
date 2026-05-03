@@ -2,7 +2,8 @@ use iroh::{endpoint::Connection, protocol::{AcceptError, ProtocolHandler}};
 use tokio::net::TcpStream;
 use tracing::{info, warn};
 
-use crate::protocols::{codec::StreamCodec, proxy::{proxy_header::ProxyHeaderV1, proxy_helpers::proxy_streams}};
+use crate::protocols::{codec::StreamCodec, proxy::{proxy_header::ProxyHeaderV1}};
+use crate::stream_helpers::proxy_streams;
 
 #[derive(Debug, Clone)]
 pub struct ProxyServerProtocolV1;

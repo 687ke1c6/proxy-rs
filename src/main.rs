@@ -6,6 +6,7 @@ mod http;
 mod protocols;
 mod server;
 mod socks5;
+mod stream_helpers;
 
 use client::client::{run_send_file, run_tcp_client};
 

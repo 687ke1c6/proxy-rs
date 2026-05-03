@@ -1,6 +1,5 @@
 use anyhow::{Context, Result};
 use iroh::{Endpoint, SecretKey, address_lookup::{self, PkarrPublisher}, endpoint::presets, protocol::Router};
-use tokio::io::{AsyncReadExt};
 use std::{path::Path, str::FromStr};
 use tracing::info;
 
@@ -50,13 +49,3 @@ pub async fn run_server() -> Result<()> {
 
     Ok(())
 }
-
-pub async fn copy_bytes<A, B>(a: &mut A, b: &mut B, size: usize) -> anyhow::Result<()>
-    where 
-        A: tokio::io::AsyncRead + Unpin,
-        B: tokio::io::AsyncWrite + Unpin 
-    {
-        let mut limited = a.take(size as u64);
-        tokio::io::copy(&mut limited, b).await?;
-        Ok(())
-    }

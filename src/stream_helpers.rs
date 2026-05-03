@@ -1,5 +1,5 @@
 use anyhow::Result;
-use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 
 /// Bidirectionally proxy between two async read/write halves.
 /// Returns when either direction closes or errors.
@@ -25,3 +25,14 @@ where
 
     Ok(())
 }
+
+pub async fn copy_bytes<A, B>(a: &mut A, b: &mut B, size: usize) -> anyhow::Result<()>
+    where 
+        A: tokio::io::AsyncRead + Unpin,
+        B: tokio::io::AsyncWrite + Unpin 
+    {
+        let mut limited = a.take(size as u64);
+        tokio::io::copy(&mut limited, b).await?;
+        Ok(())
+    }
+
