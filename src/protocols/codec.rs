@@ -35,6 +35,15 @@ impl StreamCodec for u64 {
     }
 }
 
+impl StreamCodec for bool {
+    async fn encode<W: AsyncWrite + Unpin>(&self, w: &mut W) -> Result<()> {
+        Ok(w.write_u8(if *self { 1 } else { 0 }).await?)
+    }
+    async fn decode<R: AsyncRead + Unpin>(r: &mut R) -> Result<Self> {
+        Ok(r.read_u8().await? != 0)
+    }
+}
+
 // Strings are always encoded as a u16 length prefix followed by UTF-8 bytes.
 impl StreamCodec for String {
     async fn encode<W: AsyncWrite + Unpin>(&self, w: &mut W) -> Result<()> {

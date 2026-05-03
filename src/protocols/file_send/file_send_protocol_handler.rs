@@ -20,7 +20,7 @@ impl ProtocolHandler for FileServerProtocolV1 {
 impl FileServerProtocolV1 {
     async fn handle(&self, connection: Connection) -> anyhow::Result<()> {
         info!("Accepted file_send connection from {}", connection.remote_id());
-        let _alpn = String::from_utf8(connection.alpn().to_vec())?;
+        let alpn_string = String::from_utf8(connection.alpn().to_vec())?;
         let (mut iroh_send, mut iroh_recv) = connection.accept_bi().await?;
 
         let file_send_header = FileSendHeader::decode(&mut iroh_recv).await?;
@@ -57,7 +57,7 @@ impl FileServerProtocolV1 {
         info!("sending ack");
         Ack::ack().encode(&mut iroh_send).await?;
 
-        info!("Finished writing file: {_alpn}");
+        info!("Finished writing file: {alpn_string}");
         Ok(())
     }
 }

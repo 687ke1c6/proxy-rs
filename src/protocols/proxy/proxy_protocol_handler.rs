@@ -1,9 +1,8 @@
-use anyhow::Context;
 use iroh::{endpoint::Connection, protocol::{AcceptError, ProtocolHandler}};
 use tokio::net::TcpStream;
 use tracing::{info, warn};
 
-use crate::protocols::proxy::proxy_helpers::{proxy_streams, read_proxy_header};
+use crate::protocols::{codec::StreamCodec, proxy::{proxy_header::ProxyHeaderV1, proxy_helpers::proxy_streams}};
 
 #[derive(Debug, Clone)]
 pub struct ProxyServerProtocolV1;
@@ -13,7 +12,7 @@ impl ProtocolHandler for ProxyServerProtocolV1 {
         let alpn = String::from_utf8(connection.alpn().to_vec()).unwrap();
         let (iroh_send, mut iroh_recv) = connection.accept_bi().await?;
 
-        let proxy_header = read_proxy_header(&mut iroh_recv).await.with_context(||"").unwrap();
+        let proxy_header = ProxyHeaderV1::decode(&mut iroh_recv).await.expect("Decode ProxyHeader failed");
         let tcp_target = format!("{}:{}", proxy_header.host, proxy_header.port);
         info!("Connecting to TCP target {tcp_target}");
 

@@ -5,7 +5,7 @@ use iroh::{Endpoint, EndpointId, address_lookup::{self, PkarrPublisher}, endpoin
 use tokio::net::{TcpListener, TcpStream};
 use tracing::{error, info, warn};
 
-use crate::protocols::{ack::Ack, codec::StreamCodec, file_send::{alpn::FILE_ALPN_V1, file_send_header::FileSendHeader}, ping::{alpn::PING_ALPN_V1, ping_header::PingHeader}, proxy::{alpn::TCP_PROXY_ALPN_V1, proxy_header::ProxyHeader}};
+use crate::protocols::{ack::Ack, codec::StreamCodec, file_send::{alpn::FILE_ALPN_V1, file_send_header::FileSendHeader}, ping::{alpn::PING_ALPN_V1, ping_header::PingHeader}, proxy::{alpn::TCP_PROXY_ALPN_V1, proxy_header::ProxyHeaderV1}};
 use crate::protocols::proxy::proxy_helpers::{proxy_streams};
 use crate::socks5;
 use crate::http;
@@ -33,19 +33,12 @@ fn get_proxy_addr_and_type(url: &str) -> (ProxyType, String) {
 
 async fn ping_server(endpoint: &Endpoint, server_node_id: EndpointId) -> Result<()> {
     const MSG: &str = "ping";
-    info!("Pinging server {server_node_id}");
     let conn = endpoint.connect(server_node_id, PING_ALPN_V1).await?;
-    info!("Connected to server, opening stream");
     let (mut send, mut recv) = conn.open_bi().await.with_context(||"Could not get bi_directional channel")?;
-    info!("Sending ping to server {server_node_id}");
     PingHeader { version: 1, msg: MSG.to_string() }.encode(&mut send).await?;
-    info!("Ping sent");
     send.finish()?;
-    info!("Ping finished, waiting for pong response");
     let pong = PingHeader::decode(&mut recv).await.with_context(||"Couldn't receive ping header")?;
-    info!("Received pong from server: {:?}", pong.msg);
     anyhow::ensure!(pong.msg == MSG, "ping/pong message mismatch: got {:?}", pong.msg);
-    info!("Server is reachable (pong: {:?})", pong.msg);
     Ok(())
 }
 
@@ -82,11 +75,14 @@ pub async fn run_send_file(file_path: String, server_node_id_str: Option<String>
         ping_server(&endpoint, server_node_id).await?;
         let conn = endpoint.connect(server_node_id, FILE_ALPN_V1).await?;
         info!("connected to server {server_node_id}");
+
         let (mut iroh_send, mut iroh_recv) = conn.open_bi().await?;
         info!("sending file header");
+
         let file_send_header = FileSendHeader { file_name, file_size, version: 1, can_overwrite };
         file_send_header.encode(&mut iroh_send).await?;
         info!("sent file header, waiting for ack");
+
         let file_send_header_ack = Ack::decode(&mut iroh_recv).await?;
         info!("ack received, {}", file_send_header_ack.msg);
         if file_send_header_ack.ack != 0 {
@@ -181,8 +177,8 @@ async fn handle_http(
     let conn = endpoint.connect(server_node_id, TCP_PROXY_ALPN_V1).await?;
     let (mut iroh_send, iroh_recv) = conn.open_bi().await?;
 
-    let proxy_header = ProxyHeader { version: 1, host: host.clone(), port, can_read: true, can_write: false, can_execute: false };
-    proxy_header.write_to_stream(&mut iroh_send).await?;
+    let proxy_header = ProxyHeaderV1 { version: 1, host: host.clone(), port };
+    proxy_header.encode(&mut iroh_send).await?;
 
     if !preamble.is_empty() {
         iroh_send.write_all(&preamble).await?;
@@ -209,8 +205,8 @@ async fn handle_socks5(
 
     let (mut iroh_send, iroh_recv) = conn.open_bi().await?;
 
-    let proxy_header = ProxyHeader { version: 1, host, port, can_read: true, can_write: false, can_execute: false };
-    proxy_header.write_to_stream(&mut iroh_send).await?;
+    let proxy_header = ProxyHeaderV1 { version: 1, host, port };
+    proxy_header.encode(&mut iroh_send).await?;
 
     let (tcp_read, tcp_write) = tcp.into_split();
     proxy_streams(iroh_recv, iroh_send, tcp_read, tcp_write).await?;

@@ -9,7 +9,7 @@ pub struct Ack {
 
 impl Ack {
     pub fn no_ack(ack: u8, message: Option<String>) -> Self {
-        let msg = if let Some(m) = message {m} else {"".to_string()};
+        let msg = if let Some(m) = message {m} else {String::new()};
         if ack == 0 {
             panic!("Failed ack should be > 0")
         }        
@@ -21,7 +21,7 @@ impl Ack {
     pub fn ack() -> Self {
         Ack { 
             ack: 0, 
-            msg: "".to_string()
+            msg: String::new()
         }
     }
 }
