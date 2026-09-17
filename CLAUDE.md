@@ -53,7 +53,7 @@ The three protocols and their ALPN strings:
 
 `client.rs` always pings the server first, then opens the appropriate ALPN connection. For TCP proxy mode it runs a `TcpListener` and spawns a task per connection; each task does a SOCKS5 or HTTP handshake locally before opening the iroh stream.
 
-`client_helpers.rs` manages saved node IDs in `~/.proxy-rs/node-ids.yaml` (YAML list of `{ name, key }` entries). Names are auto-generated as `Adjective Animal` using built-in word lists (no extra deps). When no `--node-id` flag is passed and multiple IDs are saved, `dialoguer::Select` prompts the user with `Name [first-16-chars-of-key...]`.
+`client_helpers.rs` manages saved node IDs in `~/.proxy-rs/node-ids.yaml` (YAML list of `{ name, key }` entries). Names are auto-generated as `Adjective Animal` using built-in word lists (no extra deps). Passing `--node-id` always skips the menu below and uses that ID directly (saving it if not already known). Otherwise (including when only one, or zero, IDs are saved) `dialoguer::Select` always prompts the user with every saved entry as `Name [first-16-chars-of-key...]`, plus a trailing `<new>` entry; picking `<new>` prompts with `dialoguer::Input` for a node ID, validated as a parseable `EndpointId`, then saves it exactly as if it had been passed via `-n`.
 
 ### Persistent state (`~/.proxy-rs/`)
 

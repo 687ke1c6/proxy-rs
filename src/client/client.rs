@@ -56,7 +56,10 @@ pub async fn run_send_file(file_path: String, server_node_id_str: Option<String>
 
     let mut reader = tokio::fs::File::open(&full_path).await?;
 
-    let raw: String = server_node_id_str.unwrap_or_else(|| load_node_id_from_file().expect("Could not get node-id"));
+    let raw: String = match server_node_id_str {
+        Some(id) => id,
+        None => load_node_id_from_file()?,
+    };
     let server_node_id = EndpointId::from_str(&raw).with_context(|| "Could not parse server node id")?;
 
     let endpoint = Arc::new(
@@ -114,7 +117,10 @@ pub async fn run_tcp_client(listen_addr: String, server_node_id_str: Option<Stri
         write_node_id_to_file(id)?;
     }
 
-    let raw: String = server_node_id_str.unwrap_or_else(|| load_node_id_from_file().unwrap());
+    let raw: String = match server_node_id_str {
+        Some(id) => id,
+        None => load_node_id_from_file()?,
+    };
     let server_node_id = EndpointId::from_str(&raw).with_context(|| "Could not parse server node id")?;
 
     let endpoint = Arc::new(

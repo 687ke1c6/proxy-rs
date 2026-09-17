@@ -1,7 +1,9 @@
 use std::path::PathBuf;
+use std::str::FromStr;
 
 use anyhow::{Context, Result};
-use dialoguer::Select;
+use dialoguer::{Input, Select};
+use iroh::EndpointId;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use tracing::info;
@@ -49,36 +51,60 @@ fn generate_name() -> String {
     format!("{adj} {animal}")
 }
 
+const NEW_ENTRY_LABEL: &str = "<new>";
+
 pub fn load_node_id_from_file() -> Result<String> {
-    let mut config = load_config()?;
-    match config.node_entries.len() {
-        0 => anyhow::bail!("No saved server node IDs. Pass one with -n on first run."),
-        1 => Ok(config.node_entries.into_iter().next().unwrap().key),
-        _ => {
-            // Rotate last-used entry to the front of the display list.
-            let mut ordered: Vec<&NodeEntry> = config.node_entries.iter().collect();
-            if let Some(last_key) = &config.last_used {
-                if let Some(pos) = ordered.iter().position(|e| &e.key == last_key) {
-                    let entry = ordered.remove(pos);
-                    ordered.insert(0, entry);
-                }
-            }
-            let labels: Vec<String> = ordered
-                .iter()
-                .map(|e| format!("{} [{}...]", e.name, &e.key[..16]))
-                .collect();
-            let selection = Select::new()
-                .with_prompt("Select server node ID")
-                .items(&labels)
-                .default(0)
-                .interact()
-                .with_context(|| "Failed to get user selection")?;
-            let selected_key = ordered[selection].key.clone();
-            config.last_used = Some(selected_key.clone());
-            save_config(&config)?;
-            Ok(selected_key)
+    let config = load_config()?;
+
+    // Rotate last-used entry to the front of the display list.
+    let mut ordered: Vec<&NodeEntry> = config.node_entries.iter().collect();
+    if let Some(last_key) = &config.last_used {
+        if let Some(pos) = ordered.iter().position(|e| &e.key == last_key) {
+            let entry = ordered.remove(pos);
+            ordered.insert(0, entry);
         }
     }
+
+    let mut labels: Vec<String> = ordered
+        .iter()
+        .map(|e| format!("{} [{}...]", e.name, &e.key[..16]))
+        .collect();
+    labels.push(NEW_ENTRY_LABEL.to_string());
+
+    let selection = Select::new()
+        .with_prompt("Select server node ID")
+        .items(&labels)
+        .default(0)
+        .interact()
+        .with_context(|| "Failed to get user selection")?;
+
+    let selected_key = if selection == ordered.len() {
+        let id = prompt_new_node_id()?;
+        write_node_id_to_file(&id)?;
+        id
+    } else {
+        ordered[selection].key.clone()
+    };
+
+    let mut config = load_config()?;
+    config.last_used = Some(selected_key.clone());
+    save_config(&config)?;
+    Ok(selected_key)
+}
+
+fn prompt_new_node_id() -> Result<String> {
+    let id: String = Input::new()
+        .with_prompt("Enter a server node ID")
+        .validate_with(|input: &String| -> Result<(), &str> {
+            EndpointId::from_str(input.trim())
+                .map(|_| ())
+                .map_err(|_| "Not a valid node ID")
+        })
+        .interact_text()
+        .with_context(|| "Failed to read server node ID")?
+        .trim()
+        .to_string();
+    Ok(id)
 }
 
 pub fn write_node_id_to_file(id: &str) -> Result<()> {
