@@ -1,24 +1,25 @@
 use anyhow::{Context, Result};
 use iroh::{Endpoint, SecretKey, address_lookup::{self, PkarrPublisher}, endpoint::presets, protocol::Router};
-use std::{path::Path, str::FromStr};
+use std::str::FromStr;
 use tracing::info;
 
+use crate::config_dir::config_dir;
 use crate::protocols::{file_send::{alpn::FILE_ALPN_V1, file_send_protocol_handler::FileServerProtocolV1}, ping::{alpn::PING_ALPN_V1, ping_protocol_handler::PingServerProtocolV1}, proxy::{alpn::TCP_PROXY_ALPN_V1, proxy_protocol_handler::ProxyServerProtocolV1}};
 
 fn load_or_create_secret_key() -> Result<SecretKey> {
-    let path = ".server-key";
-    if Path::new(path).exists() {
-        let hex = std::fs::read_to_string(path)
-            .with_context(|| format!("failed to read key file: {path}"))?;
+    let path = config_dir()?.join("server-key");
+    if path.exists() {
+        let hex = std::fs::read_to_string(&path)
+            .with_context(|| format!("failed to read key file: {}", path.display()))?;
         let key = SecretKey::from_str(&hex).with_context(|| "")?;
-        info!("Loaded secret key from {path}");
+        info!("Loaded secret key from {}", path.display());
         Ok(key)
     } else {
         let key = SecretKey::generate();
         let ss: String = key.to_bytes().iter().map(|b| format!("{b:02x}")).collect();
-        std::fs::write(path, ss)
-            .with_context(|| format!("failed to write key file: {path}"))?;
-        info!("Generated new secret key, saved to {path}");
+        std::fs::write(&path, ss)
+            .with_context(|| format!("failed to write key file: {}", path.display()))?;
+        info!("Generated new secret key, saved to {}", path.display());
         Ok(key)
     }
 }

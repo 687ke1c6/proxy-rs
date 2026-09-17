@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use dialoguer::Select;
@@ -6,7 +6,13 @@ use rand::Rng;
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
-const PATH: &str = ".node-ids.yaml";
+use crate::config_dir::config_dir;
+
+const FILENAME: &str = "node-ids.yaml";
+
+fn path() -> Result<PathBuf> {
+    Ok(config_dir()?.join(FILENAME))
+}
 
 const ADJECTIVES: &[&str] = &[
     "Amber", "Bouncy", "Cosmic", "Dapper", "Eager", "Focal", "Groovy",
@@ -76,13 +82,14 @@ pub fn load_node_id_from_file() -> Result<String> {
 }
 
 pub fn write_node_id_to_file(id: &str) -> Result<()> {
+    let path = path()?;
     let mut config = load_config().unwrap_or_default();
     if config.node_entries.iter().any(|e| e.key == id) {
-        info!("Server node id already saved in {PATH}");
+        info!("Server node id already saved in {}", path.display());
         return Ok(());
     }
     let name = generate_name();
-    info!("Saving server node id as \"{name}\" to {PATH}");
+    info!("Saving server node id as \"{name}\" to {}", path.display());
     config.node_entries.push(NodeEntry {
         name,
         key: id.to_string(),
@@ -91,18 +98,20 @@ pub fn write_node_id_to_file(id: &str) -> Result<()> {
 }
 
 fn load_config() -> Result<ClientConfig> {
-    if !Path::new(PATH).exists() {
+    let path = path()?;
+    if !path.exists() {
         return Ok(ClientConfig::default());
     }
-    let content = std::fs::read_to_string(PATH)
-        .with_context(|| format!("failed to read config file: {PATH}"))?;
+    let content = std::fs::read_to_string(&path)
+        .with_context(|| format!("failed to read config file: {}", path.display()))?;
     serde_yaml::from_str(&content)
-        .with_context(|| format!("failed to parse config file: {PATH}"))
+        .with_context(|| format!("failed to parse config file: {}", path.display()))
 }
 
 fn save_config(config: &ClientConfig) -> Result<()> {
+    let path = path()?;
     let yaml =
         serde_yaml::to_string(config).with_context(|| "failed to serialize client config")?;
-    std::fs::write(PATH, yaml)
-        .with_context(|| format!("failed to write config file: {PATH}"))
+    std::fs::write(&path, yaml)
+        .with_context(|| format!("failed to write config file: {}", path.display()))
 }

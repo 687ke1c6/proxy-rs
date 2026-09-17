@@ -1,0 +1,25 @@
+services:
+  dev:
+    hostname: dev
+    container_name: proxy-rs-dev-container
+    build:
+      context: ..
+      dockerfile: .devcontainer/Dockerfile
+    volumes:
+      - ..:/workspaces/iroh-proxy:cached
+    command: sleep infinity
+    stop_signal: SIGKILL
+
+  test-server:
+    hostname: bun
+    container_name: proxy-rs-test-server
+    build:
+      context: bun
+      dockerfile: Dockerfile
+    command: bun run --watch script.ts
+    stop_signal: SIGKILL
+    volumes:
+      - ./bun/script.ts:/app/script.ts:ro
+    working_dir: /app
+    ports:
+      - "3000:3000"

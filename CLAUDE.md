@@ -11,10 +11,15 @@ cargo run -- -l socks5://127.0.0.1:1080 -n <node-id>  # run as SOCKS5 proxy clie
 cargo run -- -l http://127.0.0.1:8080  -n <node-id>   # run as HTTP proxy client
 cargo run -- -f <path> -n <node-id>                    # send a file to the server
 cargo clippy                  # lint
-cargo test                    # run tests (none currently exist)
+cargo test                    # run unit tests (none currently exist)
+cargo test -- --ignored       # run the e2e smoke test (see below)
 ```
 
-There are no tests at this time. The binary is `proxy-rs`.
+The binary is `proxy-rs`.
+
+### End-to-end test (`tests/e2e/`)
+
+`tests/e2e.rs` has one `#[ignore]`d test, `socks5_proxy_smoke_test`, wrapping [tests/e2e/socks5_proxy.sh](tests/e2e/socks5_proxy.sh). It's `#[ignore]`d (not run by plain `cargo test`) because it needs the devcontainer's docker network and real processes: it starts a `proxy-rs` server and a SOCKS5 `proxy-rs` client (both built by `cargo test` via `CARGO_BIN_EXE_proxy-rs`, run against a temp working directory with `HOME` also pointed at it, so `~/.proxy-rs/server-key` and `~/.proxy-rs/node-ids.yaml` don't touch the real dev files), waits for the server to print its NodeId and the client's SOCKS5 listener to come up, then curls the `bun` docker-compose test-server (`.devcontainer/docker-compose.yaml`) through the proxy and asserts on the response body. Run it with `cargo test -- --ignored`.
 
 ## Architecture
 
@@ -26,6 +31,10 @@ The single binary runs in three modes depending on CLI flags:
 - `--listen` → TCP proxy client (SOCKS5 or HTTP)
 - `--file` → file sender client
 - neither → server
+
+`--config-dir` / `-d` overrides the persistent state directory (see below); if omitted, it defaults to `~/.proxy-rs`.
+
+Every flag can also be set via an env var (`PROXY_RS_NODE_ID`, `PROXY_RS_LISTEN`, `PROXY_RS_FILE`, `PROXY_RS_OVERWRITE`, `PROXY_RS_CONFIG_DIR`); an explicit CLI flag takes precedence.
 
 ### Protocol layer (`src/protocols/`)
 
@@ -44,13 +53,15 @@ The three protocols and their ALPN strings:
 
 `client.rs` always pings the server first, then opens the appropriate ALPN connection. For TCP proxy mode it runs a `TcpListener` and spawns a task per connection; each task does a SOCKS5 or HTTP handshake locally before opening the iroh stream.
 
-`client_helpers.rs` manages saved node IDs in `.node-ids.yaml` (YAML list of `{ name, key }` entries). Names are auto-generated as `Adjective Animal` using built-in word lists (no extra deps). When no `--node-id` flag is passed and multiple IDs are saved, `dialoguer::Select` prompts the user with `Name [first-16-chars-of-key...]`.
+`client_helpers.rs` manages saved node IDs in `~/.proxy-rs/node-ids.yaml` (YAML list of `{ name, key }` entries). Names are auto-generated as `Adjective Animal` using built-in word lists (no extra deps). When no `--node-id` flag is passed and multiple IDs are saved, `dialoguer::Select` prompts the user with `Name [first-16-chars-of-key...]`.
 
-### Server persistent state
+### Persistent state (`~/.proxy-rs/`)
 
-Two files are created in the working directory on first run:
-- `.server-key` — hex-encoded `iroh::SecretKey`; determines the server's stable node ID
-- `.node-ids.yaml` — client-side list of known server node IDs (written by the client)
+Both files live in `~/.proxy-rs` by default, resolved by `config_dir()` in `src/config_dir.rs`, created on first run:
+- `server-key` — hex-encoded `iroh::SecretKey`; determines the server's stable node ID.
+- `node-ids.yaml` — client-side list of known server node IDs (written by the client).
+
+`main.rs` calls `config_dir::set_config_dir_override()` before dispatching to a mode when `--config-dir`/`-d` is passed, pointing `config_dir()` at that directory instead (used as-is, not joined with `.proxy-rs`).
 
 ### HTTP proxy handling (`src/http.rs`)
 
