@@ -12,14 +12,14 @@ fn load_or_create_secret_key() -> Result<SecretKey> {
         let hex = std::fs::read_to_string(&path)
             .with_context(|| format!("failed to read key file: {}", path.display()))?;
         let key = SecretKey::from_str(&hex).with_context(|| "")?;
-        info!("Loaded secret key from {}", path.display());
+        info!("Loaded secret key from {} {}", path.display(), key.public().to_string());
         Ok(key)
     } else {
         let key = SecretKey::generate();
         let ss: String = key.to_bytes().iter().map(|b| format!("{b:02x}")).collect();
         std::fs::write(&path, ss)
             .with_context(|| format!("failed to write key file: {}", path.display()))?;
-        info!("Generated new secret key, saved to {}", path.display());
+        info!("Generated new secret key, saved to {} {}", path.display(), key.public().to_string());
         Ok(key)
     }
 }
