@@ -114,7 +114,7 @@ pub async fn run_tcp_client(listen_addr: String, server_node_id_str: Option<Stri
     info!("Proxy type: {:?}, Proxy address: {addr}", typ);
 
     if let Some(id) = &server_node_id_str {
-        write_node_id_to_file(id)?;
+        write_node_id_to_file(id, None)?;
     }
 
     let raw: String = match server_node_id_str {

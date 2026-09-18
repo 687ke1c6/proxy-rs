@@ -79,8 +79,8 @@ pub fn load_node_id_from_file() -> Result<String> {
         .with_context(|| "Failed to get user selection")?;
 
     let selected_key = if selection == ordered.len() {
-        let id = prompt_new_node_id()?;
-        write_node_id_to_file(&id)?;
+        let (id, name) = prompt_new_node_id()?;
+        write_node_id_to_file(&id, Some(&name))?;
         id
     } else {
         ordered[selection].key.clone()
@@ -92,7 +92,7 @@ pub fn load_node_id_from_file() -> Result<String> {
     Ok(selected_key)
 }
 
-fn prompt_new_node_id() -> Result<String> {
+fn prompt_new_node_id() -> Result<(String, String)> {
     let id: String = Input::new()
         .with_prompt("Enter a server node ID")
         .validate_with(|input: &String| -> Result<(), &str> {
@@ -104,17 +104,26 @@ fn prompt_new_node_id() -> Result<String> {
         .with_context(|| "Failed to read server node ID")?
         .trim()
         .to_string();
-    Ok(id)
+
+    let name: String = Input::new()
+        .with_prompt("Name")
+        .default(generate_name())
+        .interact_text()
+        .with_context(|| "Failed to read name")?
+        .trim()
+        .to_string();
+
+    Ok((id, name))
 }
 
-pub fn write_node_id_to_file(id: &str) -> Result<()> {
+pub fn write_node_id_to_file(id: &str, name: Option<&str>) -> Result<()> {
     let path = path()?;
     let mut config = load_config().unwrap_or_default();
     if config.node_entries.iter().any(|e| e.key == id) {
         info!("Server node id already saved in {}", path.display());
         return Ok(());
     }
-    let name = generate_name();
+    let name = name.map(str::to_string).unwrap_or_else(generate_name);
     info!("Saving server node id as \"{name}\" to {}", path.display());
     config.node_entries.push(NodeEntry {
         name,
