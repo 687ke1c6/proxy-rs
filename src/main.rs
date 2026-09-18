@@ -18,6 +18,9 @@ struct Args {
     /// iroh ticket to connect to (client mode)
     #[arg(short, long, env = "PROXY_RS_NODE_ID")]
     node_id: Option<String>,
+    /// saved name for the server node id (client mode, -l)
+    #[arg(long, env = "PROXY_RS_NAME")]
+    name: Option<String>,
     #[arg(short, long, env = "PROXY_RS_LISTEN")]
     listen: Option<String>,
     #[arg(short, long, env = "PROXY_RS_FILE")]
@@ -43,7 +46,7 @@ async fn main() -> Result<()> {
         config_dir::set_config_dir_override(dir);
     }
     if let Some(listen) = args.listen {
-        return run_tcp_client(listen, args.node_id).await.or_else(|e: anyhow::Error| anyhow::bail!("Failed to run TCP client: {e:#}"));
+        return run_tcp_client(listen, args.node_id, args.name).await.or_else(|e: anyhow::Error| anyhow::bail!("Failed to run TCP client: {e:#}"));
     }
     if let Some(file) = args.file {
         return run_send_file(file, args.node_id, args.overwrite).await.or_else(|e: anyhow::Error| anyhow::bail!("Failed to run file send: {e:#}"));

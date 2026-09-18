@@ -6,7 +6,7 @@ use dialoguer::{Input, Select};
 use iroh::EndpointId;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::config_dir::config_dir;
 
@@ -92,7 +92,7 @@ pub fn load_node_id_from_file() -> Result<String> {
     Ok(selected_key)
 }
 
-fn prompt_new_node_id() -> Result<(String, String)> {
+fn prompt_node_id() -> Result<String> {
     let id: String = Input::new()
         .with_prompt("Enter a server node ID")
         .validate_with(|input: &String| -> Result<(), &str> {
@@ -104,6 +104,11 @@ fn prompt_new_node_id() -> Result<(String, String)> {
         .with_context(|| "Failed to read server node ID")?
         .trim()
         .to_string();
+    Ok(id)
+}
+
+fn prompt_new_node_id() -> Result<(String, String)> {
+    let id = prompt_node_id()?;
 
     let name: String = Input::new()
         .with_prompt("Name")
@@ -114,6 +119,96 @@ fn prompt_new_node_id() -> Result<(String, String)> {
         .to_string();
 
     Ok((id, name))
+}
+
+fn find_by_key(config: &ClientConfig, key: &str) -> Option<usize> {
+    config.node_entries.iter().position(|e| e.key == key)
+}
+
+fn find_by_name(config: &ClientConfig, name: &str) -> Option<usize> {
+    config.node_entries.iter().position(|e| e.name == name)
+}
+
+fn set_last_used(key: &str) -> Result<()> {
+    let mut config = load_config()?;
+    config.last_used = Some(key.to_string());
+    save_config(&config)
+}
+
+/// Resolves the server node id for client mode (`-l`) from `-n`/`--name`:
+/// - both given: use `id` if known (renaming its entry to `name`), else add it as `name`.
+/// - only `-n`: use `id` if known, else add it under a generated name.
+/// - only `--name`: use the saved id for `name` if known, else prompt for an id and save it as `name`.
+/// - neither: fall back to the existing interactive `Select` menu.
+pub fn resolve_node_id(node_id: Option<String>, name: Option<String>) -> Result<String> {
+    let selected = match (node_id, name) {
+        (Some(id), Some(name)) => {
+            let mut config = load_config()?;
+            let key_idx = find_by_key(&config, &id);
+            if let Some(name_idx) = find_by_name(&config, &name) {
+                if Some(name_idx) != key_idx {
+                    anyhow::bail!(
+                        "Name \"{name}\" is already used by a different saved entry ({}...); pick a different --name",
+                        &config.node_entries[name_idx].key[..16]
+                    );
+                }
+            }
+            match key_idx {
+                Some(idx) => {
+                    if config.node_entries[idx].name != name {
+                        info!(
+                            "Renaming saved entry \"{}\" to \"{name}\"",
+                            config.node_entries[idx].name
+                        );
+                        config.node_entries[idx].name = name;
+                        save_config(&config)?;
+                    }
+                }
+                None => {
+                    info!("Saving server node id as \"{name}\" to {}", path()?.display());
+                    config.node_entries.push(NodeEntry { name, key: id.clone() });
+                    save_config(&config)?;
+                }
+            }
+            id
+        }
+        (Some(id), None) => {
+            write_node_id_to_file(&id, None)?;
+            id
+        }
+        (None, Some(name)) => {
+            let config = load_config()?;
+            let matches: Vec<usize> = config
+                .node_entries
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| e.name == name)
+                .map(|(i, _)| i)
+                .collect();
+            match matches.first() {
+                Some(&idx) => {
+                    if matches.len() > 1 {
+                        warn!(
+                            "Multiple saved entries are named \"{name}\"; using the first match ({}...)",
+                            &config.node_entries[idx].key[..16]
+                        );
+                    }
+                    config.node_entries[idx].key.clone()
+                }
+                None => {
+                    let id = prompt_node_id()?;
+                    let mut config = config;
+                    config.node_entries.push(NodeEntry { name, key: id.clone() });
+                    save_config(&config)?;
+                    id
+                }
+            }
+        }
+        (None, None) => return load_node_id_from_file(),
+    };
+
+    set_last_used(&selected)?;
+    Ok(selected)
 }
 
 pub fn write_node_id_to_file(id: &str, name: Option<&str>) -> Result<()> {

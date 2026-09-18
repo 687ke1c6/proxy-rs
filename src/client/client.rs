@@ -8,7 +8,7 @@ use tracing::{error, info, warn};
 use crate::{protocols::{ack::Ack, codec::StreamCodec, file_send::{alpn::FILE_ALPN_V1, file_send_header::FileSendHeader}, ping::{alpn::PING_ALPN_V1, ping_header::PingHeader}, proxy::{alpn::TCP_PROXY_ALPN_V1, proxy_header::ProxyHeaderV1}}, stream_helpers::proxy_streams};
 use crate::socks5;
 use crate::http;
-use crate::client::client_helpers::{load_node_id_from_file, write_node_id_to_file};
+use crate::client::client_helpers::{load_node_id_from_file, resolve_node_id};
 
 #[derive(Debug, Clone, Copy)]
 enum ProxyType {
@@ -107,20 +107,13 @@ pub async fn run_send_file(file_path: String, server_node_id_str: Option<String>
     result
 }
 
-pub async fn run_tcp_client(listen_addr: String, server_node_id_str: Option<String>) -> Result<()> {
+pub async fn run_tcp_client(listen_addr: String, server_node_id_str: Option<String>, name: Option<String>) -> Result<()> {
     info!("Client mode");
 
     let (typ, addr) = get_proxy_addr_and_type(&listen_addr);
     info!("Proxy type: {:?}, Proxy address: {addr}", typ);
 
-    if let Some(id) = &server_node_id_str {
-        write_node_id_to_file(id, None)?;
-    }
-
-    let raw: String = match server_node_id_str {
-        Some(id) => id,
-        None => load_node_id_from_file()?,
-    };
+    let raw: String = resolve_node_id(server_node_id_str, name)?;
     let server_node_id = EndpointId::from_str(&raw).with_context(|| "Could not parse server node id")?;
 
     let endpoint = Arc::new(
