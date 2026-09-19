@@ -14,6 +14,7 @@ use crate::client::client_helpers::{load_node_id_from_file, resolve_node_id};
 enum ProxyType {
     Socks5,
     Http,
+    Tunnel,
 }
 
 fn get_proxy_addr_and_type(url: &str) -> (ProxyType, String) {
@@ -24,10 +25,30 @@ fn get_proxy_addr_and_type(url: &str) -> (ProxyType, String) {
     let typ = match prefix.to_lowercase().as_str() {
         "socks5" => ProxyType::Socks5,
         "http" => ProxyType::Http,
+        "tunnel" => ProxyType::Tunnel,
         _ => panic!("Unsupported proxy type: {}", prefix),
     };
 
     (typ, addr.to_string())
+}
+
+/// Parses a `tunnel://` target of the form `local_host:local_port:remote_host:remote_port`.
+fn parse_tunnel_addr(addr: &str) -> Result<(String, String, u16)> {
+    let parts: Vec<&str> = addr.split(':').collect();
+    let [local_host, local_port, remote_host, remote_port] = parts.as_slice() else {
+        anyhow::bail!(
+            "Invalid tunnel address {addr:?}: expected local_host:local_port:remote_host:remote_port"
+        );
+    };
+    let remote_port: u16 = remote_port
+        .parse()
+        .with_context(|| format!("Invalid remote port in tunnel address {addr:?}"))?;
+    // validate the local port too, even though TcpListener::bind takes it as a string
+    local_port
+        .parse::<u16>()
+        .with_context(|| format!("Invalid local port in tunnel address {addr:?}"))?;
+
+    Ok((format!("{local_host}:{local_port}"), remote_host.to_string(), remote_port))
 }
 
 async fn ping_server(endpoint: &Endpoint, server_node_id: EndpointId) -> Result<()> {
@@ -113,6 +134,15 @@ pub async fn run_tcp_client(listen_addr: String, server_node_id_str: Option<Stri
     let (typ, addr) = get_proxy_addr_and_type(&listen_addr);
     info!("Proxy type: {:?}, Proxy address: {addr}", typ);
 
+    let tunnel_target = match typ {
+        ProxyType::Tunnel => Some(parse_tunnel_addr(&addr)?),
+        _ => None,
+    };
+    let bind_addr = tunnel_target
+        .as_ref()
+        .map(|(local_addr, _, _)| local_addr.clone())
+        .unwrap_or(addr);
+
     let raw: String = resolve_node_id(server_node_id_str, name)?;
     let server_node_id = EndpointId::from_str(&raw).with_context(|| "Could not parse server node id")?;
 
@@ -131,8 +161,8 @@ pub async fn run_tcp_client(listen_addr: String, server_node_id_str: Option<Stri
         info!("Client NodeId: {}", endpoint.id());
         info!("Connecting to server NodeId: {server_node_id}");
 
-        let listener = TcpListener::bind(&addr).await?;
-        info!("Listening for {:?} connections on {addr}", typ);
+        let listener = TcpListener::bind(&bind_addr).await?;
+        info!("Listening for {:?} connections on {bind_addr}", typ);
 
         loop {
             tokio::select! {
@@ -141,10 +171,15 @@ pub async fn run_tcp_client(listen_addr: String, server_node_id_str: Option<Stri
                     info!("Accepted {:?} connection from {peer_addr}", typ);
 
                     let ep = endpoint.clone();
+                    let tunnel_target = tunnel_target.clone();
                     tokio::spawn(async move {
                         let result = match typ {
                             ProxyType::Socks5 => handle_socks5(tcp_stream, ep, server_node_id).await,
                             ProxyType::Http   => handle_http(tcp_stream, ep, server_node_id).await,
+                            ProxyType::Tunnel => {
+                                let (_, remote_host, remote_port) = tunnel_target.expect("tunnel target set for ProxyType::Tunnel");
+                                handle_tunnel(tcp_stream, ep, server_node_id, remote_host, remote_port).await
+                            }
                         };
                         if let Err(e) = result {
                             error!("Proxy error from {peer_addr}: {e:#}");
@@ -186,6 +221,28 @@ async fn handle_http(
     proxy_streams(iroh_recv, iroh_send, tcp_read, tcp_write).await?;
 
     warn!("HTTP proxy connection to {}:{} via iroh server closed", host, port);
+    Ok(())
+}
+
+async fn handle_tunnel(
+    tcp: TcpStream,
+    endpoint: Arc<Endpoint>,
+    server_node_id: EndpointId,
+    remote_host: String,
+    remote_port: u16,
+) -> Result<()> {
+    info!("Tunnel -> {}:{}", remote_host, remote_port);
+
+    let conn = endpoint.connect(server_node_id, TCP_PROXY_ALPN_V1).await?;
+    let (mut iroh_send, iroh_recv) = conn.open_bi().await?;
+
+    let proxy_header = ProxyHeaderV1 { version: 1, host: remote_host, port: remote_port };
+    proxy_header.encode(&mut iroh_send).await?;
+
+    let (tcp_read, tcp_write) = tcp.into_split();
+    proxy_streams(iroh_recv, iroh_send, tcp_read, tcp_write).await?;
+
+    warn!("Tunnel connection to {}:{} via iroh server closed", proxy_header.host, proxy_header.port);
     Ok(())
 }
 

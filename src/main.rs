@@ -13,7 +13,7 @@ mod stream_helpers;
 use client::client::{run_send_file, run_tcp_client};
 
 #[derive(Parser)]
-#[command(about = "Iroh proxy (SOCKS5 + HTTP) — server and client modes")]
+#[command(about = "Iroh proxy (SOCKS5 + HTTP + tunnel) — server and client modes")]
 struct Args {
     /// iroh ticket to connect to (client mode)
     #[arg(short, long, env = "PROXY_RS_NODE_ID")]

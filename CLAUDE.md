@@ -9,6 +9,7 @@ cargo build                   # build
 cargo run                     # run server (default mode)
 cargo run -- -l socks5://127.0.0.1:1080 -n <node-id>  # run as SOCKS5 proxy client
 cargo run -- -l http://127.0.0.1:8080  -n <node-id>   # run as HTTP proxy client
+cargo run -- -l tunnel://127.0.0.1:9000:remote_host:3000 -n <node-id>  # run as tunnel (ssh -L style) client
 cargo run -- -f <path> -n <node-id>                    # send a file to the server
 cargo clippy                  # lint
 cargo test                    # run unit tests (none currently exist)
@@ -28,7 +29,7 @@ This is a P2P proxy built on [iroh](https://github.com/n0-computer/iroh). The se
 ### Mode selection (main.rs)
 
 The single binary runs in three modes depending on CLI flags:
-- `--listen` → TCP proxy client (SOCKS5 or HTTP)
+- `--listen` → TCP proxy client (SOCKS5, HTTP, or tunnel)
 - `--file` → file sender client
 - neither → server
 
@@ -51,7 +52,7 @@ The three protocols and their ALPN strings:
 
 ### Client flow (`src/client/`)
 
-`client.rs` always pings the server first, then opens the appropriate ALPN connection. For TCP proxy mode it runs a `TcpListener` and spawns a task per connection; each task does a SOCKS5 or HTTP handshake locally before opening the iroh stream.
+`client.rs` always pings the server first, then opens the appropriate ALPN connection. For TCP proxy mode it runs a `TcpListener` and spawns a task per connection; each task does a SOCKS5 or HTTP handshake locally before opening the iroh stream. `tunnel://local_host:local_port:remote_host:remote_port` skips the local handshake entirely (ssh `-L`-style): the listener binds `local_host:local_port` and every accepted connection is proxied straight to the fixed `remote_host:remote_port` via `TCP_PROXY_ALPN_V1`. The server side needs no changes for this — `ProxyHeaderV1 { host, port }` is already an opaque target the server just dials, so SOCKS5/HTTP/tunnel differ only in how the client-local `(host, port)` is obtained.
 
 `client_helpers.rs` manages saved node IDs in `~/.proxy-rs/node-ids.yaml` (YAML list of `{ name, key }` entries). Names are auto-generated as `Adjective Animal` using built-in word lists (no extra deps). Passing `--node-id` always skips the menu below and uses that ID directly (saving it under an auto-generated name if not already known). Otherwise (including when only one, or zero, IDs are saved) `dialoguer::Select` always prompts the user with every saved entry as `Name [first-16-chars-of-key...]`, plus a trailing `<new>` entry; picking `<new>` prompts with `dialoguer::Input` for a node ID, validated as a parseable `EndpointId`, then prompts for a name (defaulting to an auto-generated `Adjective Animal`, shown in `[brackets]` and used as-is on empty Enter), then saves both exactly as if the ID had been passed via `-n`.
 
