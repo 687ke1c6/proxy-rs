@@ -8,20 +8,24 @@ use crate::protocols::{file_send::{alpn::FILE_ALPN_V1, file_send_protocol_handle
 
 fn load_or_create_secret_key() -> Result<SecretKey> {
     let path = config_dir()?.join("server-key");
-    if path.exists() {
+    let key = if path.exists() {
         let hex = std::fs::read_to_string(&path)
             .with_context(|| format!("failed to read key file: {}", path.display()))?;
-        let key = SecretKey::from_str(&hex).with_context(|| "")?;
-        info!("Loaded secret key from {} {}", path.display(), key.public().to_string());
-        Ok(key)
+        SecretKey::from_str(&hex).with_context(|| "")?
     } else {
         let key = SecretKey::generate();
         let ss: String = key.to_bytes().iter().map(|b| format!("{b:02x}")).collect();
         std::fs::write(&path, ss)
             .with_context(|| format!("failed to write key file: {}", path.display()))?;
         info!("Generated new secret key, saved to {} {}", path.display(), key.public().to_string());
-        Ok(key)
-    }
+        key
+    };
+
+    let pub_path = config_dir()?.join("server-key.pub");
+    std::fs::write(&pub_path, key.public().to_string())
+        .with_context(|| format!("failed to write public key file: {}", pub_path.display()))?;
+
+    Ok(key)
 }
 
 pub async fn run_server() -> Result<()> {

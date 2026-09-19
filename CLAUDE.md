@@ -58,8 +58,9 @@ The three protocols and their ALPN strings:
 
 ### Persistent state (`~/.proxy-rs/`)
 
-Both files live in `~/.proxy-rs` by default, resolved by `config_dir()` in `src/config_dir.rs`, created on first run:
+These files live in `~/.proxy-rs` by default, resolved by `config_dir()` in `src/config_dir.rs`, created on first run:
 - `server-key` — hex-encoded `iroh::SecretKey`; determines the server's stable node ID.
+- `server-key.pub` — the server's node ID (public key), written/refreshed alongside `server-key` on every server start, so it's readable without parsing the secret key.
 - `node-ids.yaml` — client-side list of known server node IDs (written by the client).
 
 `main.rs` calls `config_dir::set_config_dir_override()` before dispatching to a mode when `--config-dir`/`-d` is passed, pointing `config_dir()` at that directory instead (used as-is, not joined with `.proxy-rs`).
