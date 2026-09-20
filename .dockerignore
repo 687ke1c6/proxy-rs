@@ -1,0 +1,26 @@
+# Build artifacts
+target/
+proxy-rs-derive/target/
+
+# Version control
+.git/
+.gitignore
+
+# Local/dev environment
+.devcontainer/
+.claude/
+proxy-rs
+
+# Persistent state / secrets (see config_dir in CLAUDE.md)
+.server-key
+.node-id
+*_bak
+
+# Editor/OS cruft
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Docs/notes not needed in the image
+*.md

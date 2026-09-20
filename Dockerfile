@@ -6,7 +6,6 @@ ARG GID=1000
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     ca-certificates \
-    git \
     && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
 
@@ -21,5 +20,3 @@ WORKDIR /app
 COPY --chown=rust:rust . .
 
 RUN cargo install --path .
-
-CMD ["proxy-rs"]
