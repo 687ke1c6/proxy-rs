@@ -58,3 +58,22 @@ impl StreamCodec for String {
         Ok(String::from_utf8(bytes)?)
     }
 }
+
+// Vecs are always encoded as a u16 length prefix followed by each item in order.
+impl<T: StreamCodec> StreamCodec for Vec<T> {
+    async fn encode<W: AsyncWrite + Unpin>(&self, w: &mut W) -> Result<()> {
+        w.write_u16(self.len() as u16).await?;
+        for item in self {
+            item.encode(w).await?;
+        }
+        Ok(())
+    }
+    async fn decode<R: AsyncRead + Unpin>(r: &mut R) -> Result<Self> {
+        let len = r.read_u16().await? as usize;
+        let mut items = Vec::with_capacity(len);
+        for _ in 0..len {
+            items.push(T::decode(r).await?);
+        }
+        Ok(items)
+    }
+}

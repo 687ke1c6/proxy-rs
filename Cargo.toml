@@ -20,3 +20,4 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 iroh-tickets = "0.5.0"
 dialoguer = "0.11"
 dirs = "7.0.0"
+indicatif = "0.17"

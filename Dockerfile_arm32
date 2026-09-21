@@ -1,0 +1,27 @@
+# Cross-compiles proxy-rs and unpfs for arm32 (armv7-unknown-linux-gnueabihf),
+# for deploying just the binaries to a Raspberry Pi 3 (no Docker needed on the
+# Pi). Runs entirely on your host's native platform - no emulation needed.
+# Extract the binaries with buildx's local output:
+#   docker build -f proxy/Dockerfile_arm32 --output type=local,dest=proxy/out proxy
+# then scp proxy/out/proxy-rs and proxy/out/unpfs to the Pi.
+
+FROM rust:trixie AS builder
+
+RUN apt-get update && apt-get upgrade -y
+RUN apt-get install git build-essential ca-certificates crossbuild-essential-armhf -y && apt-get autoremove -y
+
+RUN rustup target add armv7-unknown-linux-gnueabihf
+
+ENV CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=arm-linux-gnueabihf-gcc
+
+RUN groupadd --gid 1000 rust && useradd --uid 1000 --gid 1000 --create-home rust
+USER rust
+WORKDIR /proxy/proxy-rs
+
+COPY --chown=rust:rust . .
+
+RUN cargo install --target armv7-unknown-linux-gnueabihf --path .
+
+FROM scratch AS binaries
+
+COPY --from=builder /usr/local/cargo/bin/proxy-rs /proxy-rs

@@ -8,9 +8,9 @@ of scope here — see "Future work" at the bottom.
 ## Background
 
 - `tunnel://local_host:local_port:remote_host:remote_port` (already implemented in
-  [src/client/client.rs](src/client/client.rs)) forwards arbitrary raw TCP bytes. The
+  [src/client/client.rs](../src/client/client.rs)) forwards arbitrary raw TCP bytes. The
   server's `ProxyServerProtocolV1`
-  ([src/protocols/proxy/proxy_protocol_handler.rs](src/protocols/proxy/proxy_protocol_handler.rs))
+  ([src/protocols/proxy/proxy_protocol_handler.rs](../src/protocols/proxy/proxy_protocol_handler.rs))
   just dials whatever `host:port` it's told via `ProxyHeaderV1` — it needs **zero
   changes** to carry 9P traffic.
 - 9P2000.L is a single stateful TCP connection with no side-channel/portmapper step, so
@@ -59,8 +59,8 @@ Goal: a single self-contained `proxy-rs` binary can serve a directory itself, st
 reached via the unmodified tunnel client — no external `unpfs` process to install or
 manage.
 
-- [ ] **Dependency**: add `rs9p = "0.13"` to [Cargo.toml](Cargo.toml).
-- [ ] **CLI**: add to `Args` in [src/main.rs](src/main.rs):
+- [ ] **Dependency**: add `rs9p = "0.13"` to [Cargo.toml](../Cargo.toml).
+- [ ] **CLI**: add to `Args` in [src/main.rs](../src/main.rs):
   - [ ] `--serve-dir <PATH>` (env `PROXY_RS_SERVE_DIR`) — directory to export. Only
         meaningful in server mode (i.e. no `--listen`/`--file`); bail with a clear error
         if combined with either.
@@ -72,12 +72,12 @@ manage.
       needed for a working mount (list/read/write files and dirs); skip anything unpfs
       itself doesn't need for a basic export unless Phase 0/1 testing shows it's
       required.
-- [ ] **Wire into `run_server()`** ([src/server.rs](src/server.rs)): when `--serve-dir`
+- [ ] **Wire into `run_server()`** ([src/server.rs](../src/server.rs)): when `--serve-dir`
       is set, spawn a tokio task running
       `rs9p::srv_async(fs, format!("tcp!127.0.0.1!{port}"))` alongside the existing
       `Router` — bound to loopback only, so it's unreachable except through the iroh
       tunnel.
-- [ ] **Docs**: new section in [CLAUDE.md](CLAUDE.md) describing `--serve-dir` and the
+- [ ] **Docs**: new section in [CLAUDE.md](../CLAUDE.md) describing `--serve-dir` and the
       `tunnel://...:127.0.0.1:<port>` + `mount -t 9p` recipe, replacing the Phase 0
       standalone-`unpfs` instructions once this lands.
 - [ ] **Testing**: repeat the Phase 0 mount/read/write/mkdir smoke test against the

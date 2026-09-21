@@ -53,7 +53,7 @@ fn generate_name() -> String {
 
 const NEW_ENTRY_LABEL: &str = "<new>";
 
-pub fn load_node_id_from_file() -> Result<String> {
+pub fn load_node_id_from_file() -> Result<(String, String)> {
     let config = load_config()?;
 
     // Rotate last-used entry to the front of the display list.
@@ -78,18 +78,18 @@ pub fn load_node_id_from_file() -> Result<String> {
         .interact()
         .with_context(|| "Failed to get user selection")?;
 
-    let selected_key = if selection == ordered.len() {
+    let (selected_name, selected_key) = if selection == ordered.len() {
         let (id, name) = prompt_new_node_id()?;
         write_node_id_to_file(&id, Some(&name))?;
-        id
+        (name, id)
     } else {
-        ordered[selection].key.clone()
+        (ordered[selection].name.clone(), ordered[selection].key.clone())
     };
 
     let mut config = load_config()?;
     config.last_used = Some(selected_key.clone());
     save_config(&config)?;
-    Ok(selected_key)
+    Ok((selected_name, selected_key))
 }
 
 fn prompt_node_id() -> Result<String> {
@@ -135,13 +135,14 @@ fn set_last_used(key: &str) -> Result<()> {
     save_config(&config)
 }
 
-/// Resolves the server node id for client mode (`-l`) from `-n`/`--name`:
+/// Resolves the server node id for client mode (`-l`) from `-n`/`--name`, returning
+/// `(name, node_id)` so callers can print a human-readable name instead of just the key:
 /// - both given: use `id` if known (renaming its entry to `name`), else add it as `name`.
 /// - only `-n`: use `id` if known, else add it under a generated name.
 /// - only `--name`: use the saved id for `name` if known, else prompt for an id and save it as `name`.
 /// - neither: fall back to the existing interactive `Select` menu.
-pub fn resolve_node_id(node_id: Option<String>, name: Option<String>) -> Result<String> {
-    let selected = match (node_id, name) {
+pub fn resolve_node_id(node_id: Option<String>, name: Option<String>) -> Result<(String, String)> {
+    let selected: (String, String) = match (node_id, name) {
         (Some(id), Some(name)) => {
             let mut config = load_config()?;
             let key_idx = find_by_key(&config, &id);
@@ -160,21 +161,21 @@ pub fn resolve_node_id(node_id: Option<String>, name: Option<String>) -> Result<
                             "Renaming saved entry \"{}\" to \"{name}\"",
                             config.node_entries[idx].name
                         );
-                        config.node_entries[idx].name = name;
+                        config.node_entries[idx].name = name.clone();
                         save_config(&config)?;
                     }
                 }
                 None => {
                     info!("Saving server node id as \"{name}\" to {}", path()?.display());
-                    config.node_entries.push(NodeEntry { name, key: id.clone() });
+                    config.node_entries.push(NodeEntry { name: name.clone(), key: id.clone() });
                     save_config(&config)?;
                 }
             }
-            id
+            (name, id)
         }
         (Some(id), None) => {
-            write_node_id_to_file(&id, None)?;
-            id
+            let name = write_node_id_to_file(&id, None)?;
+            (name, id)
         }
         (None, Some(name)) => {
             let config = load_config()?;
@@ -193,38 +194,42 @@ pub fn resolve_node_id(node_id: Option<String>, name: Option<String>) -> Result<
                             &config.node_entries[idx].key[..16]
                         );
                     }
-                    config.node_entries[idx].key.clone()
+                    let id = config.node_entries[idx].key.clone();
+                    (name, id)
                 }
                 None => {
                     let id = prompt_node_id()?;
                     let mut config = config;
-                    config.node_entries.push(NodeEntry { name, key: id.clone() });
+                    config.node_entries.push(NodeEntry { name: name.clone(), key: id.clone() });
                     save_config(&config)?;
-                    id
+                    (name, id)
                 }
             }
         }
         (None, None) => return load_node_id_from_file(),
     };
 
-    set_last_used(&selected)?;
+    set_last_used(&selected.1)?;
     Ok(selected)
 }
 
-pub fn write_node_id_to_file(id: &str, name: Option<&str>) -> Result<()> {
+/// Saves `id` under `name` (or a generated name) if not already known, and returns the
+/// name now associated with it — its existing saved name if it was already known.
+pub fn write_node_id_to_file(id: &str, name: Option<&str>) -> Result<String> {
     let path = path()?;
     let mut config = load_config().unwrap_or_default();
-    if config.node_entries.iter().any(|e| e.key == id) {
+    if let Some(existing) = config.node_entries.iter().find(|e| e.key == id) {
         info!("Server node id already saved in {}", path.display());
-        return Ok(());
+        return Ok(existing.name.clone());
     }
     let name = name.map(str::to_string).unwrap_or_else(generate_name);
     info!("Saving server node id as \"{name}\" to {}", path.display());
     config.node_entries.push(NodeEntry {
-        name,
+        name: name.clone(),
         key: id.to_string(),
     });
-    save_config(&config)
+    save_config(&config)?;
+    Ok(name)
 }
 
 fn load_config() -> Result<ClientConfig> {

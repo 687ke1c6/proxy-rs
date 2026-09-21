@@ -16,7 +16,7 @@ existing interactive `Select`).
 ## Steps
 
 - [x] **CLI**: add `--name` (long-only, no short flag — `-n`/`-l`/`-f`/`-o`/`-d` are
-      already taken) to `Args` in [src/main.rs](src/main.rs), with `env = "PROXY_RS_NAME"`
+      already taken) to `Args` in [src/main.rs](../src/main.rs), with `env = "PROXY_RS_NAME"`
       for consistency with the other flags. Pass it through to `run_tcp_client` only;
       leave `run_send_file`'s call site unchanged.
 
@@ -69,7 +69,7 @@ existing interactive `Select`).
         all (server mode) → ignored silently; `args.name` is only ever threaded
         through to `run_tcp_client`, so no extra code was needed for this.
 
-- [ ] **Docs**: update the "Client flow" section of [CLAUDE.md](CLAUDE.md) — it
+- [ ] **Docs**: update the "Client flow" section of [CLAUDE.md](../CLAUDE.md) — it
       currently documents the old "`-n` always skips the menu, no way to name a
       fresh entry" behavior and needs to describe `--name`'s three new cases.
 

@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::Parser;
-use std::path::PathBuf;
 
+mod cli;
 mod client;
 mod config_dir;
 mod http;
@@ -10,46 +10,47 @@ mod server;
 mod socks5;
 mod stream_helpers;
 
-use client::client::{run_send_file, run_tcp_client};
+use cli::{Cli, ClientArgs, ClientMode, Command, FileArgs, HttpArgs, ServerArgs, Socks5Args, TunnelArgs, VolumesArgs};
+use client::client::{run_list_volumes, run_send_file, run_tcp_client, ProxyType};
 
-#[derive(Parser)]
-#[command(about = "Iroh proxy (SOCKS5 + HTTP + tunnel) — server and client modes")]
-struct Args {
-    /// iroh ticket to connect to (client mode)
-    #[arg(short, long, env = "PROXY_RS_NODE_ID")]
-    node_id: Option<String>,
-    /// saved name for the server node id (client mode, -l)
-    #[arg(long, env = "PROXY_RS_NAME")]
-    name: Option<String>,
-    #[arg(short, long, env = "PROXY_RS_LISTEN")]
-    listen: Option<String>,
-    #[arg(short, long, env = "PROXY_RS_FILE")]
-    file: Option<String>,
-    /// allow overwriting existing files
-    #[arg(short, long, env = "PROXY_RS_OVERWRITE")]
-    overwrite: bool,
-    /// defaults to ~/.proxy-rs
-    #[arg(short = 'd', long, value_name = "DIR", env = "PROXY_RS_CONFIG_DIR")]
-    config_dir: Option<PathBuf>,
+fn print_banner() {
+    println!("{} v{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::new("proxy_rs=warn,proxy_rs=info,error"),
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("error")),
         )
         .init();
 
-    let args = Args::parse();
-    if let Some(dir) = args.config_dir {
+    print_banner();
+
+    let cli = Cli::parse();
+    if let Some(dir) = cli.config_dir {
         config_dir::set_config_dir_override(dir);
     }
-    if let Some(listen) = args.listen {
-        return run_tcp_client(listen, args.node_id, args.name).await.or_else(|e: anyhow::Error| anyhow::bail!("Failed to run TCP client: {e:#}"));
+
+    match cli.command {
+        Command::Server(ServerArgs { volumes }) => server::run_server(volumes).await,
+        Command::Client(ClientArgs { node_id, name, mode }) => match mode {
+            ClientMode::Socks5(Socks5Args { listen }) => {
+                run_tcp_client(ProxyType::Socks5, listen, None, node_id, name).await.or_else(|e: anyhow::Error| anyhow::bail!("Failed to run SOCKS5 client: {e:#}"))
+            }
+            ClientMode::Http(HttpArgs { listen }) => {
+                run_tcp_client(ProxyType::Http, listen, None, node_id, name).await.or_else(|e: anyhow::Error| anyhow::bail!("Failed to run HTTP client: {e:#}"))
+            }
+            ClientMode::Tunnel(TunnelArgs { listen, remote_host, remote_port }) => {
+                run_tcp_client(ProxyType::Tunnel, listen, Some((remote_host, remote_port)), node_id, name).await.or_else(|e: anyhow::Error| anyhow::bail!("Failed to run tunnel client: {e:#}"))
+            }
+            ClientMode::File(FileArgs { file, overwrite, target }) => {
+                run_send_file(file, node_id, name, target, overwrite).await.or_else(|e: anyhow::Error| anyhow::bail!("Failed to run file send: {e:#}"))
+            }
+            ClientMode::Volumes(VolumesArgs {}) => {
+                run_list_volumes(node_id, name).await.or_else(|e: anyhow::Error| anyhow::bail!("Failed to list volumes: {e:#}"))
+            }
+        },
     }
-    if let Some(file) = args.file {
-        return run_send_file(file, args.node_id, args.overwrite).await.or_else(|e: anyhow::Error| anyhow::bail!("Failed to run file send: {e:#}"));
-    }
-    server::run_server().await
 }

@@ -40,7 +40,7 @@ cleanup() {
 trap cleanup EXIT
 
 echo "== starting proxy-rs server ($WORKDIR/server.log) =="
-"$BIN" >server.log 2>&1 &
+"$BIN" server >server.log 2>&1 &
 SERVER_PID=$!
 
 NODE_ID=""
@@ -50,7 +50,7 @@ for _ in $(seq 1 50); do
         cat server.log >&2
         exit 1
     fi
-    NODE_ID=$(grep -oP 'Server NodeId: \K\S+' server.log || true)
+    NODE_ID=$(grep -oP 'Iroh node listening \[\K[0-9a-f]+' server.log || true)
     [[ -n "$NODE_ID" ]] && break
     sleep 0.2
 done
@@ -62,7 +62,7 @@ fi
 echo "server NodeId: $NODE_ID"
 
 echo "== starting proxy-rs SOCKS5 client ($WORKDIR/client.log) =="
-"$BIN" -l "socks5://127.0.0.1:$SOCKS5_PORT" -n "$NODE_ID" >client.log 2>&1 &
+"$BIN" client socks5 --listen "127.0.0.1:$SOCKS5_PORT" -n "$NODE_ID" >client.log 2>&1 &
 CLIENT_PID=$!
 
 READY=0
