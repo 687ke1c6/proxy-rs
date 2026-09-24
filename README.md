@@ -1,13 +1,16 @@
 # proxy-rs
 
-**Reach your machines by public key, not by IP address.**
+**A client/server CLI that carries TCP proxying, port tunnels and file transfer over [iroh](https://github.com/n0-computer/iroh) streams.**
 
-`proxy-rs` is a peer-to-peer proxy, tunnel and file-transfer tool built on [iroh](https://github.com/n0-computer/iroh). Run the server on a box behind NAT, CGNAT, a firewall or a flaky home connection. Clients dial it by its **node ID** and iroh does the rest: hole-punching, relay fallback and end-to-end encrypted QUIC.
+`proxy-rs` is one binary with two modes:
 
-No port forwarding, no dynamic DNS and no VPN to set up. One binary covers both ends.
+- **`server`** runs an iroh endpoint. It accepts a small set of protocols, each on its own ALPN, and does the work on the server's side: dialling TCP targets and writing files into exposed directories.
+- **`client`** opens iroh streams to that server and connects them to something local: a SOCKS5 or HTTP proxy listener, a forwarded port, a file, or rsync.
+
+Clients address the server by its iroh **node ID** rather than an IP address. iroh handles NAT traversal, relay fallback and end-to-end encryption, so the server needs no open ports, port forwarding or dynamic DNS.
 
 ```text
-  your laptop                                              your Pi at home
+  your laptop                                                 remote machine
 ┌──────────────────┐                                   ┌───────────────────┐
 │ browser ─► SOCKS5│    iroh / QUIC (E2E encrypted)    │  proxy-rs server  │ ─► LAN / internet
 │ curl ─► HTTP     │ ════════════════════════════════► │                   │
@@ -26,7 +29,7 @@ No port forwarding, no dynamic DNS and no VPN to set up. One binary covers both 
 - **rsync over iroh.** Use `proxy-rs` as rsync's `-e` transport in place of ssh.
 - **Stable identity.** The server keeps its key across restarts, so its node ID never changes.
 - **Saved servers.** Clients remember node IDs under friendly names (`Brave Otter`, `Sleepy Heron`, …) and show a picker when you don't pass one.
-- **Runs on a Raspberry Pi.** A Dockerfile is included that cross-compiles for armv7.
+- **arm32 builds.** A Dockerfile is included that cross-compiles for armv7.
 
 ## Quick start
 
@@ -140,7 +143,7 @@ ssh -p 2222 user@127.0.0.1
 ```bash
 $ proxy-rs client volumes -n <node-id>
 media:/srv/media
-home:/home/pi/in
+home:/home/user/in
 ```
 
 #### `file`: send a file
@@ -209,17 +212,16 @@ Read this before exposing a server.
 
 Client authentication is on the roadmap, and contributions are welcome.
 
-## Running on a Raspberry Pi
+## Cross-compiling for arm32
 
 `Dockerfile_arm32` cross-compiles for `armv7-unknown-linux-gnueabihf` on your host, with no emulation, and outputs just the binary:
 
 ```bash
 docker build -f Dockerfile_arm32 --output type=local,dest=out .
-scp out/proxy-rs pi@raspberrypi:~/
-ssh pi@raspberrypi './proxy-rs server -v media:/media'
+scp out/proxy-rs user@host:~/
 ```
 
-To keep it running, wrap it in a systemd unit. It holds the same node ID across reboots.
+To keep a server running, wrap it in a systemd unit. It holds the same node ID across restarts.
 
 ## How it works
 
