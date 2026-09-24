@@ -8,7 +8,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tracing::{error, info, warn};
 
-use crate::{protocols::{ack::Ack, codec::StreamCodec, file_send::{alpn::FILE_ALPN_V1, file_send_header::FileSendHeader}, list_volumes::{alpn::LIST_VOLUMES_ALPN_V1, list_volumes_header::{ListVolumesRequest, ListVolumesResponse}}, ping::{alpn::PING_ALPN_V1, ping_header::PingHeader}, proxy::{alpn::TCP_PROXY_ALPN_V1, proxy_header::ProxyHeaderV1}}, stream_helpers::proxy_streams};
+use crate::{protocols::{ack::Ack, codec::StreamCodec, file_send::{alpn::FILE_ALPN_V1, file_send_header::FileSendHeader}, list_volumes::{alpn::LIST_VOLUMES_ALPN_V1, list_volumes_header::{ListVolumesRequest, ListVolumesResponse}}, ping::{alpn::PING_ALPN_V1, ping_header::PingHeader}, proxy::{alpn::TCP_PROXY_ALPN_V1, proxy_header::ProxyHeaderV1}, rsync::{alpn::RSYNC_ALPN_V1, rsync_header::RsyncHeader}}, stream_helpers::proxy_streams};
 use crate::socks5;
 use crate::http;
 use crate::client::client_helpers::resolve_node_id;
@@ -30,33 +30,24 @@ impl ProxyType {
     }
 }
 
-/// The client's resolved intent for where a sent file should land on the server.
+/// The client's resolved intent for where a sent file should land on the server. The
+/// file always keeps its local basename — `--target` only ever picks a destination
+/// directory, never a new name, so it's unambiguous what it does.
 struct FileTarget {
     /// Volume name, e.g. "home"; empty means "let the server pick a default".
     volume: String,
     /// `/`-separated relative directory within the volume; empty means the volume root.
     target_dir: String,
-    /// Overrides the file's local basename on the server, if the client renamed it.
-    file_name: Option<String>,
 }
 
-/// Parses a `--target` spec of the form `volume[/dir...][/new_name]`.
-///
-/// A trailing `/` (or no `/` at all) means "directory only" and the file keeps its local
-/// basename; anything else after the volume name is treated as `dir/.../new_name`, i.e. a
-/// rename. Examples: `home`, `home/`, `home/subfolder/`, `home/subfolder/renamed.log`.
+/// Parses a `--target` spec of the form `volume[/dir...]`. Examples: `home`,
+/// `home/subfolder`, `home/subfolder/deeper`.
 fn parse_target(spec: &str) -> Result<FileTarget> {
     let (volume, rest) = spec.split_once('/').unwrap_or((spec, ""));
     anyhow::ensure!(!volume.is_empty(), "invalid --target {spec:?}: must start with a volume name");
 
-    if rest.is_empty() {
-        return Ok(FileTarget { volume: volume.to_string(), target_dir: String::new(), file_name: None });
-    }
-    if let Some(dir) = rest.strip_suffix('/') {
-        return Ok(FileTarget { volume: volume.to_string(), target_dir: dir.to_string(), file_name: None });
-    }
-    let (dir, name) = rest.rsplit_once('/').unwrap_or(("", rest));
-    Ok(FileTarget { volume: volume.to_string(), target_dir: dir.to_string(), file_name: Some(name.to_string()) })
+    let target_dir = rest.trim_end_matches('/').to_string();
+    Ok(FileTarget { volume: volume.to_string(), target_dir })
 }
 
 async fn ping_server(endpoint: &Endpoint, server_node_id: EndpointId) -> Result<()> {
@@ -166,12 +157,12 @@ pub async fn run_send_file(file_path: String, server_node_id_str: Option<String>
 
     let path = std::path::Path::new(&full_path);
 
-    let local_file_name = path.file_name().and_then(|s| s.to_str()).unwrap().to_string();
+    let file_name = path.file_name().and_then(|s| s.to_str()).unwrap().to_string();
 
     let target = target.as_deref().map(parse_target).transpose()?;
-    let (volume, target_dir, file_name) = match target {
-        Some(t) => (t.volume, t.target_dir, t.file_name.unwrap_or(local_file_name)),
-        None => (String::new(), String::new(), local_file_name),
+    let (volume, target_dir) = match target {
+        Some(t) => (t.volume, t.target_dir),
+        None => (String::new(), String::new()),
     };
 
     let mut reader = tokio::fs::File::open(&full_path).await?;
@@ -216,6 +207,66 @@ pub async fn run_send_file(file_path: String, server_node_id_str: Option<String>
             anyhow::bail!("Server responded with error ack: {:?}", file_send_ack.msg);
         }
         Ok(())
+    }.await;
+
+    info!("shutting down p2p endpoint");
+    endpoint.close().await;
+
+    result
+}
+
+/// rsync `-e`/`--rsh` transport: rsync spawns this as `sync-rsh <host> rsync --server
+/// <flags> . <volume[/dir]>`, exactly as it would spawn `ssh`, and expects our
+/// stdin/stdout to become a duplex pipe to that remote command. The placeholder host
+/// and literal `rsync` token are dropped (the server is picked by `-n`/`--name`), the
+/// rest is forwarded as `RsyncHeader.argv`, and once acked stdin/stdout are spliced
+/// onto the iroh stream.
+///
+/// stdout *is* the rsync protocol stream here, so nothing in this mode may print to
+/// it — all diagnostics go to stderr, which rsync passes through to the user.
+pub async fn run_sync_rsh(argv: Vec<String>, server_node_id_str: Option<String>, name: Option<String>) -> Result<()> {
+    // stdin belongs to rsync, so the interactive node-id menu can't work here.
+    anyhow::ensure!(
+        server_node_id_str.is_some() || name.is_some(),
+        "sync-rsh needs -n/--node-id or --name (stdin is rsync's pipe, so it can't prompt)"
+    );
+
+    let mut rest = argv.into_iter().skip(1); // placeholder host
+    anyhow::ensure!(
+        rest.next().as_deref() == Some("rsync"),
+        "sync-rsh expected rsync's remote command (\"rsync --server ...\") after the host"
+    );
+    let argv: Vec<String> = rest.collect();
+    info!("sync-rsh argv: {argv:?}");
+
+    let (node_name, raw): (String, String) = resolve_node_id(server_node_id_str, name)?;
+    let server_node_id = EndpointId::from_str(&raw).with_context(|| "Could not parse server node id")?;
+
+    let endpoint = Arc::new(
+        Endpoint::builder(presets::N0)
+            .address_lookup(PkarrPublisher::n0_dns())
+            .address_lookup(address_lookup::DnsAddressLookup::n0_dns())
+            .bind()
+            .await?
+    );
+
+    info!("creating endpoint");
+    endpoint.online().await;
+
+    let result = async {
+        ping_server(&endpoint, server_node_id).await?;
+        let conn = endpoint.connect(server_node_id, RSYNC_ALPN_V1).await?;
+        info!("Connected to \"{node_name}\" [{server_node_id}]");
+
+        let (mut iroh_send, mut iroh_recv) = conn.open_bi().await?;
+        RsyncHeader { version: 1, argv }.encode(&mut iroh_send).await?;
+
+        let ack = Ack::decode(&mut iroh_recv).await?;
+        if ack.ack != 0 {
+            anyhow::bail!("Server responded with error ack: {:?}", ack.msg);
+        }
+
+        proxy_streams(iroh_recv, iroh_send, tokio::io::stdin(), tokio::io::stdout()).await
     }.await;
 
     info!("shutting down p2p endpoint");

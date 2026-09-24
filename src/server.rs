@@ -7,7 +7,7 @@ use std::sync::Arc;
 use tracing::info;
 
 use crate::config_dir::config_dir;
-use crate::protocols::{file_send::{alpn::FILE_ALPN_V1, file_send_protocol_handler::FileServerProtocolV1}, list_volumes::{alpn::LIST_VOLUMES_ALPN_V1, list_volumes_protocol_handler::ListVolumesServerProtocolV1}, ping::{alpn::PING_ALPN_V1, ping_protocol_handler::PingServerProtocolV1}, proxy::{alpn::TCP_PROXY_ALPN_V1, proxy_protocol_handler::ProxyServerProtocolV1}};
+use crate::protocols::{file_send::{alpn::FILE_ALPN_V1, file_send_protocol_handler::FileServerProtocolV1}, list_volumes::{alpn::LIST_VOLUMES_ALPN_V1, list_volumes_protocol_handler::ListVolumesServerProtocolV1}, ping::{alpn::PING_ALPN_V1, ping_protocol_handler::PingServerProtocolV1}, proxy::{alpn::TCP_PROXY_ALPN_V1, proxy_protocol_handler::ProxyServerProtocolV1}, rsync::{alpn::RSYNC_ALPN_V1, rsync_protocol_handler::RsyncServerProtocolV1}};
 
 fn load_or_create_secret_key() -> Result<SecretKey> {
     let path = config_dir()?.join("server-key");
@@ -79,6 +79,7 @@ pub async fn run_server(volume_specs: Vec<String>) -> Result<()> {
         .accept(PING_ALPN_V1, PingServerProtocolV1)
         .accept(FILE_ALPN_V1, FileServerProtocolV1 { volumes: volumes.clone() })
         .accept(LIST_VOLUMES_ALPN_V1, ListVolumesServerProtocolV1 { volumes: volumes.clone() })
+        .accept(RSYNC_ALPN_V1, RsyncServerProtocolV1 { volumes: volumes.clone() })
         .accept(TCP_PROXY_ALPN_V1, ProxyServerProtocolV1)
         .spawn();
 

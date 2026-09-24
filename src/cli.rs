@@ -16,7 +16,7 @@ pub struct Cli {
 pub enum Command {
     /// Run as a server, exposing configured volumes to clients
     Server(ServerArgs),
-    /// Run as a client: TCP proxy (socks5/http/tunnel), file sender, or volume lister
+    /// Run as a client: TCP proxy (socks5/http/tunnel), file sender, volume lister, or rsync transport
     Client(ClientArgs),
 }
 
@@ -52,6 +52,9 @@ pub enum ClientMode {
     File(FileArgs),
     /// List the volumes the server has exposed via -v/--volume
     Volumes(VolumesArgs),
+    /// rsync `-e`/`--rsh` transport over iroh — pass it to rsync's `-e`, don't run it directly
+    #[command(after_help = SYNC_RSH_EXAMPLE)]
+    SyncRsh(SyncRshArgs),
 }
 
 #[derive(Args)]
@@ -89,11 +92,30 @@ pub struct FileArgs {
     /// allow overwriting existing files
     #[arg(short, long, env = "PROXY_RS_OVERWRITE")]
     pub overwrite: bool,
-    /// destination, as volume[/dir][/new_name]; required unless the server has
-    /// exactly one volume configured, in which case it's the default
+    /// destination directory, as volume[/dir]; the file keeps its local name.
+    /// Required unless the server has exactly one volume configured, in which
+    /// case it's the default
     #[arg(short = 't', long, env = "PROXY_RS_TARGET")]
     pub target: Option<String>,
 }
 
 #[derive(Args)]
 pub struct VolumesArgs {}
+
+const SYNC_RSH_EXAMPLE: &str = "\
+Example (push ./localdir into the server's `home` volume, under backup/):
+  rsync -av -e \"'/path/to/proxy-rs' client sync-rsh -n <node-id>\" ./localdir/ \"x:home/backup/\"
+
+rsync spawns this command in place of ssh. The host before the `:` is a placeholder
+(ignored; the server is picked by -n/--name), and the path after it must start with a
+volume name the server exposes (see `client volumes`). -n/--name is required, since
+stdin is rsync's pipe and the interactive node menu can't be shown. Push only; rsync
+must be installed on both ends.";
+
+#[derive(Args)]
+pub struct SyncRshArgs {
+    /// everything rsync appends to the `-e` command: the placeholder host, then
+    /// `rsync --server <flags> . <volume[/dir]>`
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
+    pub argv: Vec<String>,
+}

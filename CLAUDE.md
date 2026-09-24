@@ -12,6 +12,7 @@ cargo run -- client http --listen 127.0.0.1:8080 -n <node-id>              # run
 cargo run -- client tunnel --listen 127.0.0.1:9000 --remote-host remote_host --remote-port 3000 -n <node-id>  # run as tunnel (ssh -L style) client
 cargo run -- client file <path> -n <node-id> -t media/subdir               # send a file to a server volume
 cargo run -- client volumes -n <node-id>                                   # list the server's exposed volumes
+rsync -av -e "'target/debug/proxy-rs' client sync-rsh -n <node-id>" ./dir/ "x:media/subdir/"  # rsync push over iroh
 cargo clippy                  # lint
 cargo test                    # run unit tests (none currently exist)
 cargo test -- --ignored       # run the e2e smoke test (see below)
@@ -29,12 +30,13 @@ This is a P2P proxy built on [iroh](https://github.com/n0-computer/iroh). The se
 
 ### Mode selection (main.rs)
 
-The single binary takes a `server` or `client` subcommand (`clap::Subcommand`, each with its own `#[derive(Args)]` struct). `client` itself carries a second, nested subcommand (`ClientMode`) selecting exactly one of its five modes — no `ArgGroup` needed, the subcommand enum is the mutual-exclusion mechanism:
+The single binary takes a `server` or `client` subcommand (`clap::Subcommand`, each with its own `#[derive(Args)]` struct). `client` itself carries a second, nested subcommand (`ClientMode`) selecting exactly one of its six modes — no `ArgGroup` needed, the subcommand enum is the mutual-exclusion mechanism:
 - `server` → exposes configured `-v`/`--volume` directories (see "Persistent state" below) to clients
 - `client socks5` / `client http` → TCP proxy client, `-l`/`--listen <addr>` is purely a local bind address now (previously a `protocol://host:port` URL whose scheme selected the mode — replaced by these being separate subcommands)
 - `client tunnel` → ssh `-L`-style forwarding; `-l`/`--listen <addr>` (local bind) plus `--remote-host`/`--remote-port` (fixed remote target)
 - `client file <path>` → file sender client (positional path), writing into a server volume (`-t`/`--target` selects which)
 - `client volumes` → prints the server's exposed volumes as `name:path`, one per line
+- `client sync-rsh` → rsync transport over iroh (`proxy-rs/rsync/1`), not run directly but passed to rsync's `-e` in place of `ssh`: `rsync -av -e "'<proxy-rs>' client sync-rsh -n <node-id>" ./dir/ "x:<volume>/<dir>/"`. The host before `:` is a placeholder; the path must start with a server volume name. Push only; requires `-n`/`--name` (stdin is rsync's pipe, so no interactive menu), and `rsync` installed on both ends
 
 `-n`/`--node-id` and `--name` are global on `client` (valid before or after the mode subcommand), since every mode needs to resolve a server node id. `--config-dir`/`-d` is global on the whole binary (valid before or after `server`/`client` and, for `client`, before or after the mode too) and overrides the persistent state directory (see below); if omitted, it defaults to `~/.proxy-rs`.
 

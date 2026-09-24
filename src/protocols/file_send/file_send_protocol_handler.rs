@@ -7,7 +7,7 @@ use tokio::io::AsyncWriteExt;
 use tracing::{error, info};
 use crate::{protocols::codec::StreamCodec, stream_helpers::copy_bytes};
 
-use crate::protocols::{ack::Ack, file_send::file_send_header::FileSendHeader};
+use crate::protocols::{ack::Ack, file_send::file_send_header::FileSendHeader, volume_paths::safe_join_dir};
 
 #[derive(Debug, Clone)]
 pub struct FileServerProtocolV1 {
@@ -30,21 +30,7 @@ fn safe_join(root: &Path, target_dir: &str, file_name: &str) -> Result<PathBuf, 
         return Err(format!("invalid file name: {file_name:?}"));
     }
 
-    let mut dir = root.to_path_buf();
-    for component in target_dir.split('/').filter(|s| !s.is_empty()) {
-        if component == "." || component == ".." {
-            return Err(format!("invalid target path segment: {component:?}"));
-        }
-        dir.push(component);
-    }
-
-    std::fs::create_dir_all(&dir).map_err(|e| format!("failed to create target directory: {e}"))?;
-    let canonical_dir = dir.canonicalize().map_err(|e| format!("failed to resolve target directory: {e}"))?;
-    if !canonical_dir.starts_with(root) {
-        return Err("target path escapes the volume root".to_string());
-    }
-
-    Ok(canonical_dir.join(file_name))
+    Ok(safe_join_dir(root, target_dir)?.join(file_name))
 }
 
 /// Finishes the send half of the stream and waits for the connection to fully close.
