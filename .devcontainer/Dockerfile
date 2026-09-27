@@ -3,9 +3,11 @@ FROM rust:trixie
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     ca-certificates \
+    fzf \
     rsync \
     curl \
     git \
+    ncat \
     iproute2 \
     iputils-ping \
     && rm -rf /var/lib/apt/lists/* \

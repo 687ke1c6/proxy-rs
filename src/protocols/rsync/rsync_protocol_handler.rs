@@ -10,7 +10,7 @@ use tokio::process::Command;
 use tracing::{error, info, warn};
 
 use crate::protocols::{ack::Ack, codec::StreamCodec, rsync::rsync_header::RsyncHeader, volume_paths::{parse_volume_path, safe_join_dir}};
-use crate::stream_helpers::proxy_streams;
+use crate::stream_helpers::proxy_process_streams;
 
 #[derive(Debug, Clone)]
 pub struct RsyncServerProtocolV1 {
@@ -121,7 +121,7 @@ impl RsyncServerProtocolV1 {
             }
         });
 
-        let bridge_result = proxy_streams(iroh_recv, iroh_send, child_stdout, child_stdin).await;
+        let bridge_result = proxy_process_streams(iroh_recv, iroh_send, child_stdout, child_stdin).await;
         let _ = stderr_task.await;
 
         let status = child.wait().await?;

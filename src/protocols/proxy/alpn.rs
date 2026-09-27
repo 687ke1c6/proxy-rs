@@ -1,1 +1,1 @@
-pub const TCP_PROXY_ALPN_V1: &[u8] = b"proxy-rs/tcp-proxy/1";
+pub const TCP_PROXY_ALPN_V2: &[u8] = b"proxy-rs/tcp/2";

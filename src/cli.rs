@@ -14,7 +14,7 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
-    /// Run as a server, exposing configured volumes to clients
+    /// Run as a server, exposing only the features enabled by flags
     Server(ServerArgs),
     /// Run as a client: TCP proxy (socks5/http/tunnel), file sender, volume lister, or rsync transport
     Client(ClientArgs),
@@ -22,9 +22,26 @@ pub enum Command {
 
 #[derive(Args)]
 pub struct ServerArgs {
-    /// directory to expose to clients over --file, as name:path (repeatable)
+    /// directory clients may write into via --file/--rsync, as name:path (repeatable)
     #[arg(short = 'v', long = "volume")]
     pub volumes: Vec<String>,
+    /// allow TCP proxying (socks5/http/tunnel clients) to targets matching host:port;
+    /// host may be `*` or `*.domain`, port may be `*` or `lo-hi`; bare `*` allows everything (repeatable)
+    #[arg(short = 't', long = "tunnel", value_name = "PATTERN", env = "PROXY_RS_TUNNEL", value_delimiter = ',')]
+    pub tunnel: Vec<String>,
+    /// allow clients to send files into --volume directories
+    #[arg(short = 'f', long = "file", env = "PROXY_RS_SERVE_FILE")]
+    pub file: bool,
+    /// allow rsync pushes into --volume directories (needs rsync installed)
+    #[arg(short = 'r', long = "rsync", env = "PROXY_RS_RSYNC")]
+    pub rsync: bool,
+    /// client node id allowed to connect, as printed by `client whoami` (repeatable);
+    /// merged with the ids in <config-dir>/authorized-clients
+    #[arg(long = "allow", value_name = "NODE_ID", env = "PROXY_RS_ALLOW", value_delimiter = ',')]
+    pub allow: Vec<String>,
+    /// let any client that knows this server's node id connect (no client allowlist)
+    #[arg(long = "allow-any", env = "PROXY_RS_ALLOW_ANY", conflicts_with = "allow")]
+    pub allow_any: bool,
 }
 
 #[derive(Args)]
@@ -52,6 +69,8 @@ pub enum ClientMode {
     File(FileArgs),
     /// List the volumes the server has exposed via -v/--volume
     Volumes(VolumesArgs),
+    /// Print this client's node id, for the server's --allow or authorized-clients
+    Whoami(WhoamiArgs),
     /// rsync `-e`/`--rsh` transport over iroh — pass it to rsync's `-e`, don't run it directly
     #[command(after_help = SYNC_RSH_EXAMPLE)]
     SyncRsh(SyncRshArgs),
@@ -101,6 +120,9 @@ pub struct FileArgs {
 
 #[derive(Args)]
 pub struct VolumesArgs {}
+
+#[derive(Args)]
+pub struct WhoamiArgs {}
 
 const SYNC_RSH_EXAMPLE: &str = "\
 Example (push ./localdir into the server's `home` volume, under backup/):

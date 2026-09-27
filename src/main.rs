@@ -3,14 +3,16 @@ use clap::Parser;
 
 mod cli;
 mod client;
+mod authorized_clients;
 mod config_dir;
 mod http;
+mod identity;
 mod protocols;
 mod server;
 mod socks5;
 mod stream_helpers;
 
-use cli::{Cli, ClientArgs, ClientMode, Command, FileArgs, HttpArgs, ServerArgs, Socks5Args, SyncRshArgs, TunnelArgs, VolumesArgs};
+use cli::{Cli, ClientArgs, ClientMode, Command, FileArgs, HttpArgs, Socks5Args, SyncRshArgs, TunnelArgs, VolumesArgs, WhoamiArgs};
 use client::client::{run_list_volumes, run_send_file, run_sync_rsh, run_tcp_client, ProxyType};
 
 fn print_banner() {
@@ -21,16 +23,20 @@ fn print_banner() {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    // In sync-rsh mode stdout is rsync's protocol pipe, so the banner is skipped and
-    // logs go to stderr (rsync passes that through to the user) instead of stdout.
-    let is_sync_rsh = matches!(&cli.command, Command::Client(ClientArgs { mode: ClientMode::SyncRsh(_), .. }));
+    // In sync-rsh mode stdout is rsync's protocol pipe, and whoami's stdout is meant to be
+    // captured (`--allow $(proxy-rs client whoami)`), so the banner is skipped and logs go
+    // to stderr (rsync passes that through to the user) instead of stdout.
+    let quiet_stdout = matches!(
+        &cli.command,
+        Command::Client(ClientArgs { mode: ClientMode::SyncRsh(_) | ClientMode::Whoami(_), .. })
+    );
 
     let subscriber = tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("error")),
         );
-    if is_sync_rsh {
+    if quiet_stdout {
         subscriber.with_writer(std::io::stderr).init();
     } else {
         subscriber.init();
@@ -42,7 +48,7 @@ async fn main() -> Result<()> {
     }
 
     match cli.command {
-        Command::Server(ServerArgs { volumes }) => server::run_server(volumes).await,
+        Command::Server(args) => server::run_server(args).await,
         Command::Client(ClientArgs { node_id, name, mode }) => match mode {
             ClientMode::Socks5(Socks5Args { listen }) => {
                 run_tcp_client(ProxyType::Socks5, listen, None, node_id, name).await.or_else(|e: anyhow::Error| anyhow::bail!("Failed to run SOCKS5 client: {e:#}"))
@@ -58,6 +64,10 @@ async fn main() -> Result<()> {
             }
             ClientMode::Volumes(VolumesArgs {}) => {
                 run_list_volumes(node_id, name).await.or_else(|e: anyhow::Error| anyhow::bail!("Failed to list volumes: {e:#}"))
+            }
+            ClientMode::Whoami(WhoamiArgs {}) => {
+                println!("{}", identity::load_or_create_secret_key(identity::CLIENT_KEY_FILE)?.public());
+                Ok(())
             }
             ClientMode::SyncRsh(SyncRshArgs { argv }) => {
                 let result = run_sync_rsh(argv, node_id, name).await;

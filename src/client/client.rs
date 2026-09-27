@@ -3,15 +3,16 @@ use std::str::FromStr;
 use std::sync::Arc;
 use anyhow::{Context, Result};
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
-use iroh::{Endpoint, EndpointId, address_lookup::{self, PkarrPublisher}, endpoint::{presets}};
+use iroh::{Endpoint, EndpointId, address_lookup::{self, PkarrPublisher}, endpoint::{Connection, ConnectionError, RecvStream, SendStream, presets}};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tracing::{error, info, warn};
 
-use crate::{protocols::{ack::Ack, codec::StreamCodec, file_send::{alpn::FILE_ALPN_V1, file_send_header::FileSendHeader}, list_volumes::{alpn::LIST_VOLUMES_ALPN_V1, list_volumes_header::{ListVolumesRequest, ListVolumesResponse}}, ping::{alpn::PING_ALPN_V1, ping_header::PingHeader}, proxy::{alpn::TCP_PROXY_ALPN_V1, proxy_header::ProxyHeaderV1}, rsync::{alpn::RSYNC_ALPN_V1, rsync_header::RsyncHeader}}, stream_helpers::proxy_streams};
+use crate::{protocols::{ack::Ack, codec::StreamCodec, file_send::{alpn::FILE_ALPN_V1, file_send_header::FileSendHeader}, list_volumes::{alpn::LIST_VOLUMES_ALPN_V1, list_volumes_header::{ListVolumesRequest, ListVolumesResponse}}, ping::{alpn::PING_ALPN_V1, ping_header::PingHeader}, proxy::{alpn::TCP_PROXY_ALPN_V2, proxy_header::{ACK_CONNECT_FAILED, ACK_NOT_ALLOWED, PROXY_HEADER_VERSION, ProxyHeader}}, rsync::{alpn::RSYNC_ALPN_V1, rsync_header::RsyncHeader}}, stream_helpers::{proxy_process_streams, proxy_streams}};
 use crate::socks5;
 use crate::http;
 use crate::client::client_helpers::resolve_node_id;
+use crate::identity::{CLIENT_KEY_FILE, load_or_create_secret_key};
 
 #[derive(Debug, Clone, Copy)]
 pub enum ProxyType {
@@ -53,12 +54,28 @@ fn parse_target(spec: &str) -> Result<FileTarget> {
 async fn ping_server(endpoint: &Endpoint, server_node_id: EndpointId) -> Result<()> {
     const MSG: &str = "ping";
     let conn = endpoint.connect(server_node_id, PING_ALPN_V1).await?;
-    let (mut send, mut recv) = conn.open_bi().await.with_context(||"Could not get bi_directional channel")?;
-    PingHeader { version: 1, msg: MSG.to_string() }.encode(&mut send).await?;
-    send.finish()?;
-    let pong = PingHeader::decode(&mut recv).await.with_context(||"Couldn't receive ping header")?;
-    anyhow::ensure!(pong.msg == MSG, "ping/pong message mismatch: got {:?}", pong.msg);
-    Ok(())
+    let result: Result<()> = async {
+        let (mut send, mut recv) = conn.open_bi().await.with_context(||"Could not get bi_directional channel")?;
+        PingHeader { version: 1, msg: MSG.to_string() }.encode(&mut send).await?;
+        send.finish()?;
+        let pong = PingHeader::decode(&mut recv).await.with_context(||"Couldn't receive ping header")?;
+        anyhow::ensure!(pong.msg == MSG, "ping/pong message mismatch: got {:?}", pong.msg);
+        Ok(())
+    }.await;
+
+    // The server's client allowlist (iroh `AccessLimit`) closes refused connections with
+    // reason "not allowed"; turn that into something the user can act on.
+    if result.is_err()
+        && let Some(ConnectionError::ApplicationClosed(close)) = conn.close_reason()
+        && &close.reason[..] == b"not allowed"
+    {
+        anyhow::bail!(
+            "server refused this client: node id {} is not in its allowlist; \
+             ask the server operator to add it with --allow or to their authorized-clients file",
+            endpoint.id()
+        );
+    }
+    result
 }
 
 pub async fn run_list_volumes(server_node_id_str: Option<String>, name: Option<String>) -> Result<()> {
@@ -69,6 +86,7 @@ pub async fn run_list_volumes(server_node_id_str: Option<String>, name: Option<S
 
     let endpoint = Arc::new(
         Endpoint::builder(presets::N0)
+            .secret_key(load_or_create_secret_key(CLIENT_KEY_FILE)?)
             .address_lookup(PkarrPublisher::n0_dns())
             .address_lookup(address_lookup::DnsAddressLookup::n0_dns())
             .bind()
@@ -172,6 +190,7 @@ pub async fn run_send_file(file_path: String, server_node_id_str: Option<String>
 
     let endpoint = Arc::new(
         Endpoint::builder(presets::N0)
+            .secret_key(load_or_create_secret_key(CLIENT_KEY_FILE)?)
             .address_lookup(PkarrPublisher::n0_dns())
             .address_lookup(address_lookup::DnsAddressLookup::n0_dns())
             .bind()
@@ -244,6 +263,7 @@ pub async fn run_sync_rsh(argv: Vec<String>, server_node_id_str: Option<String>,
 
     let endpoint = Arc::new(
         Endpoint::builder(presets::N0)
+            .secret_key(load_or_create_secret_key(CLIENT_KEY_FILE)?)
             .address_lookup(PkarrPublisher::n0_dns())
             .address_lookup(address_lookup::DnsAddressLookup::n0_dns())
             .bind()
@@ -266,7 +286,7 @@ pub async fn run_sync_rsh(argv: Vec<String>, server_node_id_str: Option<String>,
             anyhow::bail!("Server responded with error ack: {:?}", ack.msg);
         }
 
-        proxy_streams(iroh_recv, iroh_send, tokio::io::stdin(), tokio::io::stdout()).await
+        proxy_process_streams(iroh_recv, iroh_send, tokio::io::stdin(), tokio::io::stdout()).await
     }.await;
 
     info!("shutting down p2p endpoint");
@@ -287,6 +307,7 @@ pub async fn run_tcp_client(typ: ProxyType, bind_addr: String, tunnel_target: Op
 
     let endpoint = Arc::new(
         Endpoint::builder(presets::N0)
+            .secret_key(load_or_create_secret_key(CLIENT_KEY_FILE)?)
             .address_lookup(PkarrPublisher::n0_dns())
             .address_lookup(address_lookup::DnsAddressLookup::n0_dns())
             .bind()
@@ -338,21 +359,59 @@ pub async fn run_tcp_client(typ: ProxyType, bind_addr: String, tunnel_target: Op
     result
 }
 
+/// Result of asking the server to open a TCP connection on our behalf.
+enum ProxyOpen {
+    /// The server connected to the target; keep `Connection` alive while streaming.
+    Connected(Connection, SendStream, RecvStream),
+    /// The server refused (`ACK_NOT_ALLOWED`, `ACK_CONNECT_FAILED`, ...); the connection is closed.
+    Refused(Ack),
+}
+
+/// Opens a `proxy-rs/tcp/2` stream to `host:port` via the server and waits for its verdict.
+/// `Err` means the server itself couldn't be reached or broke protocol.
+async fn open_proxy_stream(endpoint: &Endpoint, server_node_id: EndpointId, host: &str, port: u16) -> Result<ProxyOpen> {
+    info!("Connecting to iroh server {server_node_id}");
+    let conn = endpoint.connect(server_node_id, TCP_PROXY_ALPN_V2).await?;
+    let (mut iroh_send, mut iroh_recv) = conn.open_bi().await?;
+
+    let proxy_header = ProxyHeader { version: PROXY_HEADER_VERSION, host: host.to_string(), port };
+    proxy_header.encode(&mut iroh_send).await?;
+
+    let ack = Ack::decode(&mut iroh_recv).await?;
+    if ack.ack != 0 {
+        conn.close(0u32.into(), b"refused");
+        return Ok(ProxyOpen::Refused(ack));
+    }
+    Ok(ProxyOpen::Connected(conn, iroh_send, iroh_recv))
+}
+
 async fn handle_http(
     mut tcp: TcpStream,
     endpoint: Arc<Endpoint>,
     server_node_id: EndpointId,
 ) -> Result<()> {
-    let (host, port, preamble) = http::handshake(&mut tcp).await?;
+    let http::ProxyRequest { host, port, is_connect, preamble } = http::handshake(&mut tcp).await?;
     info!("HTTP proxy -> {}:{}", host, port);
 
-    let conn = endpoint.connect(server_node_id, TCP_PROXY_ALPN_V1).await?;
-    let (mut iroh_send, iroh_recv) = conn.open_bi().await?;
+    let opened = match open_proxy_stream(&endpoint, server_node_id, &host, port).await {
+        Ok(opened) => opened,
+        Err(e) => {
+            http::respond_error(&mut tcp, "502 Bad Gateway", "proxy-rs: could not reach the iroh server\n").await.ok();
+            return Err(e);
+        }
+    };
+    let (_conn, mut iroh_send, iroh_recv) = match opened {
+        ProxyOpen::Connected(conn, send, recv) => (conn, send, recv),
+        ProxyOpen::Refused(ack) => {
+            let status = if ack.ack == ACK_NOT_ALLOWED { "403 Forbidden" } else { "502 Bad Gateway" };
+            http::respond_error(&mut tcp, status, &format!("proxy-rs: {}\n", ack.msg)).await?;
+            anyhow::bail!("server refused {host}:{port}: {}", ack.msg);
+        }
+    };
 
-    let proxy_header = ProxyHeaderV1 { version: 1, host: host.clone(), port };
-    proxy_header.encode(&mut iroh_send).await?;
-
-    if !preamble.is_empty() {
+    if is_connect {
+        http::respond_connected(&mut tcp).await?;
+    } else {
         iroh_send.write_all(&preamble).await?;
     }
 
@@ -372,16 +431,17 @@ async fn handle_tunnel(
 ) -> Result<()> {
     info!("Tunnel -> {}:{}", remote_host, remote_port);
 
-    let conn = endpoint.connect(server_node_id, TCP_PROXY_ALPN_V1).await?;
-    let (mut iroh_send, iroh_recv) = conn.open_bi().await?;
-
-    let proxy_header = ProxyHeaderV1 { version: 1, host: remote_host, port: remote_port };
-    proxy_header.encode(&mut iroh_send).await?;
+    // No local protocol to report errors through: a refusal just closes the local socket
+    // (by dropping `tcp`) and surfaces as a logged error.
+    let (_conn, iroh_send, iroh_recv) = match open_proxy_stream(&endpoint, server_node_id, &remote_host, remote_port).await? {
+        ProxyOpen::Connected(conn, send, recv) => (conn, send, recv),
+        ProxyOpen::Refused(ack) => anyhow::bail!("server refused {remote_host}:{remote_port}: {}", ack.msg),
+    };
 
     let (tcp_read, tcp_write) = tcp.into_split();
     proxy_streams(iroh_recv, iroh_send, tcp_read, tcp_write).await?;
 
-    warn!("Tunnel connection to {}:{} via iroh server closed", proxy_header.host, proxy_header.port);
+    warn!("Tunnel connection to {}:{} via iroh server closed", remote_host, remote_port);
     Ok(())
 }
 
@@ -393,18 +453,31 @@ async fn handle_socks5(
     let (host, port) = socks5::handshake(&mut tcp).await?;
     info!("SOCKS5 CONNECT -> {}:{}", host, port);
 
-    info!("Connecting to iroh server {server_node_id}");
-    let conn = endpoint.connect(server_node_id, TCP_PROXY_ALPN_V1).await?;
+    let opened = match open_proxy_stream(&endpoint, server_node_id, &host, port).await {
+        Ok(opened) => opened,
+        Err(e) => {
+            socks5::reply(&mut tcp, socks5::REP_GENERAL_FAILURE).await.ok();
+            return Err(e);
+        }
+    };
+    let (_conn, iroh_send, iroh_recv) = match opened {
+        ProxyOpen::Connected(conn, send, recv) => (conn, send, recv),
+        ProxyOpen::Refused(ack) => {
+            let rep = match ack.ack {
+                ACK_NOT_ALLOWED => socks5::REP_NOT_ALLOWED,
+                ACK_CONNECT_FAILED => socks5::REP_CONNECTION_REFUSED,
+                _ => socks5::REP_GENERAL_FAILURE,
+            };
+            socks5::reply(&mut tcp, rep).await?;
+            anyhow::bail!("server refused {host}:{port}: {}", ack.msg);
+        }
+    };
     println!("Connected to iroh server {server_node_id}");
- 
-    let (mut iroh_send, iroh_recv) = conn.open_bi().await?;
-
-    let proxy_header = ProxyHeaderV1 { version: 1, host, port };
-    proxy_header.encode(&mut iroh_send).await?;
+    socks5::reply(&mut tcp, socks5::REP_SUCCEEDED).await?;
 
     let (tcp_read, tcp_write) = tcp.into_split();
     proxy_streams(iroh_recv, iroh_send, tcp_read, tcp_write).await?;
 
-    warn!("Connection to {}:{} via iroh server closed", proxy_header.host, proxy_header.port);
+    warn!("Connection to {}:{} via iroh server closed", host, port);
     Ok(())
 }

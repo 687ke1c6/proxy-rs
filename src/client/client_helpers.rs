@@ -10,7 +10,7 @@ use tracing::{info, warn};
 
 use crate::config_dir::config_dir;
 
-const FILENAME: &str = "node-ids.yaml";
+const FILENAME: &str = "nodes.yaml";
 
 fn path() -> Result<PathBuf> {
     Ok(config_dir()?.join(FILENAME))
@@ -40,8 +40,6 @@ struct NodeEntry {
 struct ClientConfig {
     #[serde(default)]
     node_entries: Vec<NodeEntry>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    last_used: Option<String>,
 }
 
 fn generate_name() -> String {
@@ -55,15 +53,7 @@ const NEW_ENTRY_LABEL: &str = "<new>";
 
 pub fn load_node_id_from_file() -> Result<(String, String)> {
     let config = load_config()?;
-
-    // Rotate last-used entry to the front of the display list.
-    let mut ordered: Vec<&NodeEntry> = config.node_entries.iter().collect();
-    if let Some(last_key) = &config.last_used {
-        if let Some(pos) = ordered.iter().position(|e| &e.key == last_key) {
-            let entry = ordered.remove(pos);
-            ordered.insert(0, entry);
-        }
-    }
+    let ordered: Vec<&NodeEntry> = config.node_entries.iter().collect();
 
     let mut labels: Vec<String> = ordered
         .iter()
@@ -86,9 +76,6 @@ pub fn load_node_id_from_file() -> Result<(String, String)> {
         (ordered[selection].name.clone(), ordered[selection].key.clone())
     };
 
-    let mut config = load_config()?;
-    config.last_used = Some(selected_key.clone());
-    save_config(&config)?;
     Ok((selected_name, selected_key))
 }
 
@@ -127,12 +114,6 @@ fn find_by_key(config: &ClientConfig, key: &str) -> Option<usize> {
 
 fn find_by_name(config: &ClientConfig, name: &str) -> Option<usize> {
     config.node_entries.iter().position(|e| e.name == name)
-}
-
-fn set_last_used(key: &str) -> Result<()> {
-    let mut config = load_config()?;
-    config.last_used = Some(key.to_string());
-    save_config(&config)
 }
 
 /// Resolves the server node id for client mode (`-l`) from `-n`/`--name`, returning
@@ -206,10 +187,9 @@ pub fn resolve_node_id(node_id: Option<String>, name: Option<String>) -> Result<
                 }
             }
         }
-        (None, None) => return load_node_id_from_file(),
+        (None, None) => load_node_id_from_file()?,
     };
 
-    set_last_used(&selected.1)?;
     Ok(selected)
 }
 
@@ -217,7 +197,7 @@ pub fn resolve_node_id(node_id: Option<String>, name: Option<String>) -> Result<
 /// name now associated with it — its existing saved name if it was already known.
 pub fn write_node_id_to_file(id: &str, name: Option<&str>) -> Result<String> {
     let path = path()?;
-    let mut config = load_config().unwrap_or_default();
+    let mut config = load_config()?;
     if let Some(existing) = config.node_entries.iter().find(|e| e.key == id) {
         info!("Server node id already saved in {}", path.display());
         return Ok(existing.name.clone());

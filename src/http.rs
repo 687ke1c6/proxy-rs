@@ -2,13 +2,22 @@ use anyhow::{bail, Result};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
-/// Perform an HTTP proxy handshake.
-///
-/// Returns `(host, port, preamble)` where `preamble` is any data that must be
-/// forwarded to the upstream target before streaming the rest of the connection.
-/// For `CONNECT` (HTTPS) this is empty; for plain HTTP it is the original
-/// request headers so the upstream server receives a well-formed request.
-pub async fn handshake(stream: &mut TcpStream) -> Result<(String, u16, Vec<u8>)> {
+/// A parsed HTTP proxy request.
+pub struct ProxyRequest {
+    pub host: String,
+    pub port: u16,
+    /// `CONNECT` tunnel: the caller must send [`respond_connected`] once the upstream
+    /// is reachable. Plain HTTP requests get no proxy-level success response; the
+    /// upstream's own response is streamed back instead.
+    pub is_connect: bool,
+    /// Data to forward to the upstream before streaming the rest of the connection.
+    /// For `CONNECT` (HTTPS) this is empty; for plain HTTP it is the original request
+    /// headers so the upstream server receives a well-formed request.
+    pub preamble: Vec<u8>,
+}
+
+/// Perform an HTTP proxy handshake: read and parse the request, without responding.
+pub async fn handshake(stream: &mut TcpStream) -> Result<ProxyRequest> {
     let headers = read_headers(stream).await?;
     let headers_str = std::str::from_utf8(&headers)?;
 
@@ -27,8 +36,7 @@ pub async fn handshake(stream: &mut TcpStream) -> Result<(String, u16, Vec<u8>)>
             .rsplit_once(':')
             .ok_or_else(|| anyhow::anyhow!("invalid CONNECT target: {target}"))?;
         let port: u16 = port_str.parse()?;
-        stream.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n").await?;
-        Ok((host.to_string(), port, vec![]))
+        Ok(ProxyRequest { host: host.to_string(), port, is_connect: true, preamble: vec![] })
     } else {
         // Plain HTTP: target is an absolute URL, e.g. "http://example.com/path"
         let without_scheme = target
@@ -41,8 +49,25 @@ pub async fn handshake(stream: &mut TcpStream) -> Result<(String, u16, Vec<u8>)>
             (authority.to_string(), 80u16)
         };
         // RFC 7230 §5.3.2: servers MUST accept the absolute-form, so forward as-is.
-        Ok((host, port, headers))
+        Ok(ProxyRequest { host, port, is_connect: false, preamble: headers })
     }
+}
+
+/// Tell a `CONNECT` client its tunnel is up.
+pub async fn respond_connected(stream: &mut TcpStream) -> Result<()> {
+    stream.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n").await?;
+    Ok(())
+}
+
+/// Send a proxy-generated error response (e.g. `403 Forbidden`, `502 Bad Gateway`)
+/// with `body` as plain text.
+pub async fn respond_error(stream: &mut TcpStream, status: &str, body: &str) -> Result<()> {
+    let response = format!(
+        "HTTP/1.1 {status}\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    stream.write_all(response.as_bytes()).await?;
+    Ok(())
 }
 
 /// Read bytes from `stream` until the end of the HTTP headers (`\r\n\r\n`).

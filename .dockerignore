@@ -10,6 +10,7 @@ proxy-rs-derive/target/
 .devcontainer/
 .claude/
 proxy-rs
+.proxy-rs
 
 # Persistent state / secrets (see config_dir in CLAUDE.md)
 .server-key

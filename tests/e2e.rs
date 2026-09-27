@@ -1,9 +1,9 @@
 //! End-to-end smoke tests.
 //!
-//! These spin up real proxy-rs server + client processes and hit the bun
-//! test-server (see `.devcontainer/docker-compose.yaml`, service `bun`)
-//! through the proxy, so they need the devcontainer's docker network and are
-//! `#[ignore]`d by default. Run explicitly with:
+//! These spin up real proxy-rs server + client processes and a local `ncat`
+//! HTTP listener, hit it through the proxy (and check a target outside the
+//! server's `-t` allowlist is refused), so they need `ncat` installed and
+//! real processes/ports and are `#[ignore]`d by default. Run explicitly with:
 //!
 //!     cargo test -- --ignored
 
