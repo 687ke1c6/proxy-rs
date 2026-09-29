@@ -290,7 +290,7 @@ Read this before exposing a server.
 `Dockerfile_arm32` cross-compiles for `armv7-unknown-linux-gnueabihf` on your host, with no emulation, and outputs just the binary:
 
 ```bash
-docker build -f Dockerfile_arm32 --output type=local,dest=out target/armv7
+docker build -f Dockerfile_arm32 --output type=local,dest=target/armv7 . 
 ```
 
 ## Development
