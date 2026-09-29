@@ -119,17 +119,7 @@ proxy-rs client tunnel --listen 127.0.0.1:2222 --remote-host localhost --remote-
   --name "Plucky Narwhal"
 ```
 
-Pass `--node-id` and `--name` together to save a server under a name you choose, or to rename one you've already saved.
-
-If you pass neither, the client shows a menu of your saved servers:
-
-```text
-Select server node ID:
-> Plucky Narwhal [2ee0c38203f21ead...]
-  <new>
-```
-
-Choosing `<new>` asks for a node ID and then a name, suggesting a generated one you can accept with Enter. The new server is saved, so it appears in the menu next time.
+You will be prompted to supply a node-id/name where none were found/provided.
 
 ## Usage
 
