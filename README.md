@@ -100,7 +100,7 @@ Putting it together:
 
 ### Node IDs
 
-The server and each client have their own iroh key pair, created on first run and reused after that, so their node IDs never change. The keys are stored in `~/.proxy-rs/` (or `--config-dir`): `server-key` and `server-key.pub` on the server, `client-key` and `client-key.pub` on the client. `proxy-rs client whoami` prints the client's node ID, which a server needs once you replace `--allow-any` with an [allowlist](#client-allowlist).
+The server and each client have their own iroh key pair, created on first run and reused after that, so their node IDs never change. The keys are stored in `~/.proxy-rs/` (or `--config-dir`): `server-key` and `server-key.pub` on the server, `client-key` and `client-key.pub` on the client. `proxy-rs client whoami` prints the client's node ID, which a server needs once you replace `--allow-any` with an allowlist (`--allow`).
 
 ### Saved servers
 
@@ -129,7 +129,9 @@ proxy-rs <server|client> ...
 
 ### Server
 
-The server exposes **nothing but a health check** unless you enable features with flags, and only to the clients you allow (see [Client allowlist](#client-allowlist))
+Whitelist clients by specifying client node id's in `~/proxy-rs/authorized-clients`. Or explicitly on the command line `proxy-rs server --allow <client-node-id>`. Or allow any client with `--allow-any` (unsafe).
+
+The server refuses to start if no client is allowed and `--allow-any` isn't set.
 
 The `-t --target` flag (repeatable) enables the server to make outbound tcp connections to given targets.
 
@@ -140,6 +142,8 @@ proxy-rs server -t '*.lan:*' -t '10.0.0.5:8000-8100'        # proxy into part of
 proxy-rs server -f -r -v media:/srv/media -v home:$HOME/in  # file send + rsync to mapped volumes
 ```
 
+All server arguments:
+
 | Flag | Env var | Description |
 |---|---|---|
 | `-t, --target <PATTERN>` | `PROXY_RS_ALLOW_TARGET` (comma-separated) | Allow TCP proxying (SOCKS5, HTTP and tunnel clients) to targets matching `PATTERN`. Repeatable. |
@@ -149,46 +153,23 @@ proxy-rs server -f -r -v media:/srv/media -v home:$HOME/in  # file send + rsync 
 | `--allow <NODE_ID>` | `PROXY_RS_ALLOW` (comma-separated) | Allow a client to connect. Repeatable. Merged with the `authorized-clients` file. |
 | `--allow-any` | `PROXY_RS_ALLOW_ANY` | Let any client that knows the server's node ID connect. Can't be combined with `--allow`. |
 
-Listing volumes (`client volumes`) is available whenever `-f` or `-r` is on. The server refuses to start if no feature is enabled, if `-v` is given without `-f`/`-r`, or if `-f`/`-r` is given without `-v`. It prints exactly what it exposes on startup.
-
-#### Client allowlist
-
-Every client has its own key (`~/.proxy-rs/client-key`, created on first use), so its node ID stays the same across runs. `proxy-rs client whoami` prints it.
-
-The server admits a client if its node ID is given with `--allow`, or listed in `~/.proxy-rs/authorized-clients` (or under `--config-dir`). The server creates that file on startup if it's missing, containing only explanatory comments, so it allows no one until you add IDs. It works like ssh's `authorized_keys`:
-
-```text
-# one node id per line; anything after it is a comment
-7c41d2…9e0b  laptop
-a90f3e…41c7  phone
-```
-
-- The file is **re-read on every connection**, so you can add or revoke a client by editing it, with no restart. Revoking stops new connections; connections already open are not cut.
-- If the file can't be read or parsed, the server logs an error and admits only the `--allow` clients.
-- The server refuses to start if no client is allowed at all, unless you pass `--allow-any`, which prints a warning.
-- The check applies to every protocol, including the health check. A refused client fails at startup with its node ID and what to ask the operator for:
-
-```text
-Error: server refused this client: node id 7c41d2…9e0b is not in its allowlist; ask the server operator to add it with --allow or to their authorized-clients file
-```
-
 ### Client
 
-Every client mode needs to know which server to use:
+The client always runs with a subcommand that picks what it does, `proxy-rs client <subcommand> [options]`:
 
-| Flag | Env var | Description |
-|---|---|---|
-| `-n, --node-id <ID>` | `PROXY_RS_NODE_ID` | Server node ID. It is saved under an auto-generated name the first time you use it. |
-| `--name <NAME>` | `PROXY_RS_NAME` | Pick a previously saved server by name. |
+| Subcommand | What it does |
+|---|---|
+| [`socks5`](#socks5-local-socks5-proxy) | Run a local SOCKS5 proxy that connects out through the server |
+| [`http`](#http-local-http-proxy) | Run a local HTTP proxy that connects out through the server |
+| [`tunnel`](#tunnel-forward-one-port-like-ssh--l) | Forward one local port to a fixed target reached from the server, like `ssh -L` |
+| [`whoami`](#whoami-print-this-clients-node-id) | Print this client's node ID |
+| [`volumes`](#volumes-see-what-the-server-exposes) | List the volumes the server exposes |
+| [`file`](#file-send-a-file) | Send a file into a server volume |
+| [`sync-rsh`](#sync-rsh-rsync-over-iroh) | Transport for `rsync -e`, to push directories into a server volume |
 
-If you pass neither, you get an interactive picker with your saved servers and a `<new>` entry for adding one:
+Every subcommand except `whoami` connects to a server, chosen by its node ID `-n <server-node-id>` or its saved name `--name <name>`. Generally the name is more convenient.
 
-```text
-? Select server node ID
-> Brave Otter [3f9a0b1c2d3e4f50...]
-  Sleepy Heron [9c8b7a6f5e4d3c2b...]
-  <new>
-```
+---
 
 #### `socks5`: local SOCKS5 proxy
 
@@ -196,12 +177,16 @@ If you pass neither, you get an interactive picker with your saved servers and a
 proxy-rs client socks5 --listen 127.0.0.1:1080 --name "Brave Otter"
 ```
 
+---
+
 #### `http`: local HTTP proxy
 
 ```bash
-proxy-rs client http --listen 127.0.0.1:8080 -n <node-id>
-export https_proxy=http://127.0.0.1:8080 http_proxy=http://127.0.0.1:8080
+proxy-rs client http --listen 127.0.0.1:8080 --name "Brave Otter"
+# export https_proxy=http://127.0.0.1:8080 http_proxy=http://127.0.0.1:8080
 ```
+
+---
 
 #### `tunnel`: forward one port (like `ssh -L`)
 
@@ -210,13 +195,15 @@ Every connection to `--listen` is forwarded to `--remote-host:--remote-port`, wh
 ```bash
 # Reach the Home Assistant instance on the server's LAN
 proxy-rs client tunnel --listen 127.0.0.1:8123 \
-  --remote-host 192.168.1.50 --remote-port 8123 -n <node-id>
+  --remote-host 192.168.1.50 --remote-port 8123 --name "Brave Otter"
 
 # SSH into the server box itself, with no open ports
 proxy-rs client tunnel --listen 127.0.0.1:2222 \
-  --remote-host 127.0.0.1 --remote-port 22 -n <node-id>
+  --remote-host 127.0.0.1 --remote-port 22 --name "Brave Otter"
 ssh -p 2222 user@127.0.0.1
 ```
+
+---
 
 #### `whoami`: print this client's node ID
 
@@ -227,18 +214,22 @@ $ proxy-rs client whoami
 
 It prints only the ID, so you can use it in scripts, e.g. `ssh server "echo $(proxy-rs client whoami) laptop >> ~/.proxy-rs/authorized-clients"`.
 
+---
+
 #### `volumes`: see what the server exposes
 
 ```bash
-$ proxy-rs client volumes -n <node-id>
+$ proxy-rs client volumes --name "Brave Otter"
 media:/srv/media
 home:/home/user/in
 ```
 
+---
+
 #### `file`: send a file
 
 ```bash
-proxy-rs client file ./holiday.mkv -t media/videos/2026 -n <node-id>
+proxy-rs client file ./holiday.mkv -t media/videos/2026 --name "Brave Otter"
 ```
 
 | Flag | Description |
@@ -246,19 +237,23 @@ proxy-rs client file ./holiday.mkv -t media/videos/2026 -n <node-id>
 | `-t, --target volume[/dir]` | Destination. Subdirectories are created as needed. You can omit it if the server has exactly one volume. |
 | `-o, --overwrite` | Replace the file if it already exists. By default the transfer is refused. |
 
+---
+
 #### `sync-rsh`: rsync over iroh
 
 You don't run `sync-rsh` directly. You give it to rsync's `-e` flag in place of `ssh`:
 
 ```bash
-rsync -av -e "'$(which proxy-rs)' client sync-rsh -n <node-id>" \
+rsync -av -e "proxy-rs client sync-rsh --name 'Brave Otter'" \
   ./photos/ "x:media/photos/"
 ```
 
-- The host before the `:` (`x`) is a placeholder and is ignored. The server is chosen by `-n` or `--name`.
-- The path after the `:` must start with a volume name.
-- `-n` or `--name` is **required** here, because stdin belongs to rsync and the picker can't be shown.
+- The host before the `:` (`x`) is a placeholder and is ignored, but required.
+- The path after the `:` must start with an exposed volume name.
+- `-n` or `--name` is **required** here. Stdin belongs to rsync.
 - Only push is supported. `rsync` must be installed on **both** ends.
+
+---
 
 ### Global options
 
@@ -275,72 +270,27 @@ RUST_LOG=info proxy-rs server
 RUST_LOG=proxy_rs=debug,iroh=info proxy-rs client socks5 -l 127.0.0.1:1080 -n <id>
 ```
 
-## State on disk
-
-The state directory is `~/.proxy-rs/` by default, or whatever `--config-dir` points to.
-
-| File | Side | Contents |
-|---|---|---|
-| `server-key` | server | Hex-encoded secret key, created with mode `600`. **This is the server's identity. Keep it private and back it up.** |
-| `server-key.pub` | server | The server's node ID, rewritten on every start. |
-| `authorized-clients` | server | Client node IDs allowed to connect, one per line. Created with only comments on first start (unless `--allow-any`); never overwritten. |
-| `client-key` | client | Hex-encoded secret key, created with mode `600`. The client's identity for servers' allowlists. |
-| `client-key.pub` | client | The client's node ID (what `client whoami` prints), rewritten on every run. |
-| `nodes.yaml` | client | Saved servers, stored as a list of `{ name, key }`. |
-
-If you delete `server-key`, the server gets a new node ID and every client has to be updated. If you delete `client-key`, the client gets a new node ID and has to be allowed again on every server.
-
 ## ⚠️ Security model
 
 Read this before exposing a server.
 
 - **Clients are authenticated by their node ID.** iroh proves every client holds the secret key for the node ID it presents, and the server only admits node IDs on its allowlist (`--allow` / `authorized-clients`). The server's node ID alone is not enough to connect.
-- **Every allowed client can use every enabled feature.** There are no per-client permissions yet:
+- **Every allowed client can use every enabled feature.**:
   - with `-t`, open TCP connections to any target the patterns allow. With `-t '*'` that is **any host and port the server can reach**, including `127.0.0.1` on the server and its whole LAN;
   - with `-f` or `-r`, list the server's volumes and write files into them.
 - Enable only what you need, and keep `-t` patterns as narrow as you can.
 - `client-key` is a credential: anyone who copies it can connect as that client. To revoke a client, remove it from `authorized-clients` (or drop its `--allow` and restart).
-- With `--allow-any`, the server's node ID becomes the only credential. Treat it like a password.
+- Avoid using `--allow-any`, the server's node ID becomes the only credential. Treat it like a password.
 - Volume writes are confined to the volume root. `..` segments are rejected, and symlink escapes are caught by canonicalising the path before it is checked.
 - rsync flags are passed through to `rsync --server` as they are, **including `--delete`**. A client can delete files inside a volume.
 - Transport encryption and server authenticity come from iroh. Your client only talks to the holder of that node's secret key.
-
-Per-client feature grants are on the roadmap, and contributions are welcome.
 
 ## Cross-compiling for arm32
 
 `Dockerfile_arm32` cross-compiles for `armv7-unknown-linux-gnueabihf` on your host, with no emulation, and outputs just the binary:
 
 ```bash
-docker build -f Dockerfile_arm32 --output type=local,dest=out .
-scp out/proxy-rs user@host:~/
-```
-
-To keep a server running, wrap it in a systemd unit. It holds the same node ID across restarts.
-
-## How it works
-
-Each feature is its own iroh **ALPN protocol**, so one endpoint serves all of them over multiplexed QUIC. The server only registers the ALPNs for features you enabled; any other is refused during the QUIC handshake. `ping` is always on. Every registered ALPN is wrapped in iroh's `AccessLimit`, which closes connections from clients not on the allowlist before the protocol sees them:
-
-| ALPN | Purpose |
-|---|---|
-| `proxy-rs/ping/1` | Pre-flight check that runs before every client operation |
-| `proxy-rs/tcp/2` | Sends a `{ host, port }` header; the server checks it against `-t`, replies allowed / not allowed / connect failed, then pipes raw bytes both ways |
-| `proxy-rs/file/1` | Header → ack → file bytes → final ack |
-| `proxy-rs/list-volumes/1` | Returns the server's volume map |
-| `proxy-rs/rsync/1` | Carries an `rsync --server` session over a QUIC stream |
-
-SOCKS5, HTTP and tunnel mode all use the **same** server protocol. They differ only in how the client works out the target `(host, port)`: a SOCKS5 handshake, an HTTP request line, or a fixed value. That's why the server gates them with one target allowlist (`-t`) rather than per-mode flags.
-
-Messages use a small custom binary codec (`StreamCodec`, in [`src/protocols/codec.rs`](src/protocols/codec.rs)). Its struct impls are generated by the `#[derive(StreamCodec)]` proc macro in [`proxy-rs-derive/`](proxy-rs-derive/).
-
-```text
-src/
-├── main.rs, cli.rs        # clap CLI and mode dispatch
-├── server.rs              # iroh endpoint and protocol router
-├── client/                # client modes, saved-server picker
-├── socks5.rs, http.rs     # local proxy handshakes
-└── protocols/             # one directory per ALPN protocol
+docker build -f Dockerfile_arm32 --output type=local,dest=out target/armv7
 ```
 
 ## Development
