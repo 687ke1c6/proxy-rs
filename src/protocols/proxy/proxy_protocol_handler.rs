@@ -42,7 +42,7 @@ impl ProxyServerProtocolV2 {
 
         let tcp_target = format!("{}:{}", header.host, header.port);
         if !self.policy.allows(&header.host, header.port) {
-            warn!("Rejected TCP target {tcp_target} from {client}: not allowed by --tunnel");
+            warn!("Rejected TCP target {tcp_target} from {client}: not allowed by --target");
             let msg = format!("target {tcp_target} is not allowed by this server");
             return reject(&mut iroh_send, &connection, ACK_NOT_ALLOWED, msg).await;
         }

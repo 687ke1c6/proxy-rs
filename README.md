@@ -4,7 +4,7 @@
 
 `proxy-rs` is one binary with two modes:
 
-- **`server`** runs an iroh endpoint. It accepts only the protocols you enable with flags, each on its own ALPN, and does the work on the server's side: dialling allowed TCP targets and writing files into exposed directories.
+- **`server`** runs an iroh endpoint. It accepts only the protocols you enable with flags, each on its own ALPN, and does the work on the server's side: dialling allowed TCP targets and writing files into volume-mapped directories.
 - **`client`** opens iroh streams to that server and connects them to something local: a SOCKS5 or HTTP proxy listener, a forwarded port, a file, or rsync.
 
 Clients address the server by its iroh **node ID** rather than an IP address. iroh handles NAT traversal, relay fallback and end-to-end encryption, so the server needs no open ports, port forwarding or dynamic DNS.
@@ -35,34 +35,14 @@ Clients address the server by its iroh **node ID** rather than an IP address. ir
 
 ## Quick start
 
-### 1. Build
+We'll start by configuring a server that accepts iroh connections and tunnels those connections to a target. In this case we'll tunnel to sshd running on the same host:
+
+### 1. Start a server
+
+On the target ssh server:
 
 ```bash
-cargo build --release
-# binary: target/release/proxy-rs
-```
-
-Or install it onto your `PATH`:
-
-```bash
-cargo install --path .
-```
-
-### 2. Get the client's node ID
-
-On the machine you'll connect **from**:
-
-```bash
-proxy-rs client whoami
-# 7c41d2…9e0b
-```
-
-### 3. Start a server
-
-On the machine you'll connect **to**, allowing that client:
-
-```bash
-proxy-rs server -t '*' --allow 7c41d2…9e0b    # proxy to any target; see "Server" below to narrow this
+proxy-rs server --allow-any --target '*'
 ```
 
 ```text
@@ -70,45 +50,109 @@ proxy-rs v0.1.0
 Mode: server
 Features:
   tcp proxy -> *:*
-WARNING: open proxy enabled (-t '*'): any client with this node id can reach anything this host can, including localhost and the LAN
-Clients: 1 via --allow, 0 in /home/you/.proxy-rs/authorized-clients (re-read on every connection)
-Iroh node listening [3f9a0b…c1e2]
+WARNING: open proxy enabled (--target '*'): any client with this node id can reach anything this host can, including localhost and the LAN
+WARNING: --allow-any: any client that knows this server's node id can connect
+Iroh node listening [2ee0c38203f21eada4dcc8d744053f5a0952cb7f4833ed16f387f588e0f39977]
 ```
 
-Copy the server's node ID and give it to your clients. It is also written to `~/.proxy-rs/server-key.pub`.
+Note the two `WARNINGS`: `--allow-any` lets any client connect, and `--target '*'` lets it reach any host and port. That's the simplest setup, not a safe one.
 
-### 4. Connect a client
+The ID in brackets is the server's iroh **node ID**.
+
+### 2. Connect a client
+
+Locally open a port, and connect to our proxy-rs server by its iroh node id.
 
 ```bash
-proxy-rs client socks5 --listen 127.0.0.1:1080 -n 3f9a0b…c1e2
+proxy-rs client tunnel --listen 127.0.0.1:2222 --remote-host localhost --remote-port 22 \
+  --node-id 2ee0c38203f21eada4dcc8d744053f5a0952cb7f4833ed16f387f588e0f39977
 ```
+
+```text
+proxy-rs v0.1.0
+Mode: client tunnel
+Listening on: 127.0.0.1:2222
+Forwarding to: localhost:22
+Connected to "Plucky Narwhal" [2ee0c38203f21eada4dcc8d744053f5a0952cb7f4833ed16f387f588e0f39977]
+```
+
+`--remote-host` is resolved on the server, so `localhost` means the server itself.
+
+Now ssh to the server through the tunnel:
 
 ```bash
-curl --socks5-hostname 127.0.0.1:1080 https://ifconfig.me   # prints the server's public IP
+ssh -p 2222 user@127.0.0.1
 ```
 
-That's it. You are now browsing from the server's network.
+Putting it together:
+
+```text
+           your machine                                  server machine
+┌─────────────┐   ┌─────────────┐   .~~~~~~.   ┌─────────────┐   ┌─────────────┐
+│ ssh         │──►│ proxy-rs    │──(  iroh  )─►│ proxy-rs    │──►│ sshd        │
+│ -p 2222     │   │ client      │   '~~~~~~'   │ server      │   │ port 22     │
+│             │   │ tunnel      │              │             │   │             │
+└─────────────┘   └─────────────┘              └─────────────┘   └─────────────┘
+```
+
+
+## Concepts
+
+### Node IDs
+
+The server and each client have their own iroh key pair, created on first run and reused after that, so their node IDs never change. The keys are stored in `~/.proxy-rs/` (or `--config-dir`): `server-key` and `server-key.pub` on the server, `client-key` and `client-key.pub` on the client. `proxy-rs client whoami` prints the client's node ID, which a server needs once you replace `--allow-any` with an [allowlist](#client-allowlist).
+
+### Saved servers
+
+Clients remember the servers they connect to, in `~/.proxy-rs/nodes.yaml`. The first time you use a `--node-id`, the client saves it under a generated name. That's where `"Plucky Narwhal"` in the Quick start came from:
+
+```yaml
+node_entries:
+- name: Plucky Narwhal
+  key: 2ee0c38203f21eada4dcc8d744053f5a0952cb7f4833ed16f387f588e0f39977
+```
+
+After that, you can refer to the server by name:
+
+```bash
+proxy-rs client tunnel --listen 127.0.0.1:2222 --remote-host localhost --remote-port 22 \
+  --name "Plucky Narwhal"
+```
+
+Pass `--node-id` and `--name` together to save a server under a name you choose, or to rename one you've already saved.
+
+If you pass neither, the client shows a menu of your saved servers:
+
+```text
+Select server node ID:
+> Plucky Narwhal [2ee0c38203f21ead...]
+  <new>
+```
+
+Choosing `<new>` asks for a node ID and then a name, suggesting a generated one you can accept with Enter. The new server is saved, so it appears in the menu next time.
 
 ## Usage
 
 ```text
-proxy-rs [--config-dir DIR] <server|client> ...
+proxy-rs <server|client> ...
 ```
 
 ### Server
 
-The server exposes **nothing but a health check** unless you enable features with flags, and only to the clients you allow (see [Client allowlist](#client-allowlist)):
+The server exposes **nothing but a health check** unless you enable features with flags, and only to the clients you allow (see [Client allowlist](#client-allowlist))
+
+The `-t --target` flag (repeatable) enables the server to make outbound tcp connections to given targets.
 
 ```bash
-proxy-rs server --allow <client-id> -t localhost:22                          # ssh tunnel only
-proxy-rs server --allow <client-id> -t '*'                                   # open SOCKS5/HTTP proxy
-proxy-rs server --allow <client-id> -t '*.lan:*' -t '10.0.0.5:8000-8100'     # proxy into part of the LAN
-proxy-rs server --allow <client-id> -f -r -v media:/srv/media -v home:$HOME/in  # file send + rsync into two volumes
+proxy-rs server -t '*'                                      # outbound connections to any target
+proxy-rs server -t localhost:22                             # will only allow connecting to local sshd
+proxy-rs server -t '*.lan:*' -t '10.0.0.5:8000-8100'        # proxy into part of the LAN
+proxy-rs server -f -r -v media:/srv/media -v home:$HOME/in  # file send + rsync to mapped volumes
 ```
 
 | Flag | Env var | Description |
 |---|---|---|
-| `-t, --tunnel <PATTERN>` | `PROXY_RS_TUNNEL` (comma-separated) | Allow TCP proxying (SOCKS5, HTTP and tunnel clients) to targets matching `PATTERN`. Repeatable. |
+| `-t, --target <PATTERN>` | `PROXY_RS_ALLOW_TARGET` (comma-separated) | Allow TCP proxying (SOCKS5, HTTP and tunnel clients) to targets matching `PATTERN`. Repeatable. |
 | `-f, --file` | `PROXY_RS_SERVE_FILE` | Allow clients to send files into volumes. Needs at least one `-v`. |
 | `-r, --rsync` | `PROXY_RS_RSYNC` | Allow rsync pushes into volumes. Needs at least one `-v`, and `rsync` on the server. |
 | `-v, --volume name:path` | — | Declare a directory clients can write into, under `name`. Repeatable. The path must exist. |
@@ -116,25 +160,6 @@ proxy-rs server --allow <client-id> -f -r -v media:/srv/media -v home:$HOME/in  
 | `--allow-any` | `PROXY_RS_ALLOW_ANY` | Let any client that knows the server's node ID connect. Can't be combined with `--allow`. |
 
 Listing volumes (`client volumes`) is available whenever `-f` or `-r` is on. The server refuses to start if no feature is enabled, if `-v` is given without `-f`/`-r`, or if `-f`/`-r` is given without `-v`. It prints exactly what it exposes on startup.
-
-#### `-t` patterns
-
-A pattern is `host:port`, or a bare `*` for anything:
-
-| Pattern | Allows |
-|---|---|
-| `*` or `*:*` | Any host, any port. **This is an open proxy**, and the server prints a warning. |
-| `localhost:22` | Exactly that host and port. |
-| `*:443` | Any host, port 443. |
-| `*.lan:*` | Any subdomain of `lan` (`nas.lan`, `a.b.lan`, but not `lan` itself), any port. |
-| `db:8000-8100` | Ports 8000 to 8100 inclusive. |
-| `[::1]:22` | IPv6 addresses must be in brackets. |
-
-Hosts are case-insensitive. `*.*` is rejected: use `*`.
-
-Patterns match the **hostname the client sends, before DNS**. `-t localhost:22` does not allow `127.0.0.1:22`, and a SOCKS5 client that resolves names locally (`curl --socks5` rather than `--socks5-hostname`) sends an IP, which only matches an IP pattern. `*.example.com` is only as trustworthy as whoever controls that domain's DNS.
-
-A client whose target isn't allowed gets a clear refusal: SOCKS5 reply `0x02` ("not allowed by ruleset"), HTTP `403 Forbidden`, or, for `tunnel`, a closed connection and an error in the client's output. If the target is allowed but unreachable, SOCKS5 gets `0x05` and HTTP gets `502 Bad Gateway`.
 
 #### Client allowlist
 
@@ -251,7 +276,7 @@ rsync -av -e "'$(which proxy-rs)' client sync-rsh -n <node-id>" \
 |---|---|---|
 | `-d, --config-dir <DIR>` | `PROXY_RS_CONFIG_DIR` | State directory (default `~/.proxy-rs`). |
 
-You can set almost every flag with an environment variable: `PROXY_RS_LISTEN`, `PROXY_RS_REMOTE_HOST`, `PROXY_RS_REMOTE_PORT`, `PROXY_RS_FILE`, `PROXY_RS_TARGET` and `PROXY_RS_OVERWRITE` on the client, and `PROXY_RS_TUNNEL`, `PROXY_RS_SERVE_FILE`, `PROXY_RS_RSYNC`, `PROXY_RS_ALLOW` and `PROXY_RS_ALLOW_ANY` on the server. A flag on the command line always wins.
+You can set almost every flag with an environment variable: `PROXY_RS_LISTEN`, `PROXY_RS_REMOTE_HOST`, `PROXY_RS_REMOTE_PORT`, `PROXY_RS_FILE`, `PROXY_RS_TARGET` and `PROXY_RS_OVERWRITE` on the client, and `PROXY_RS_ALLOW_TARGET`, `PROXY_RS_SERVE_FILE`, `PROXY_RS_RSYNC`, `PROXY_RS_ALLOW` and `PROXY_RS_ALLOW_ANY` on the server. A flag on the command line always wins.
 
 The default log level is `error`. For more detail, use `RUST_LOG`:
 

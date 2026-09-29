@@ -59,7 +59,7 @@ fn rsync_on_path() -> bool {
 
 pub async fn run_server(args: ServerArgs) -> Result<()> {
     println!("Mode: server");
-    let policy = Arc::new(TargetPolicy::parse(&args.tunnel)?);
+    let policy = Arc::new(TargetPolicy::parse(&args.target)?);
     let volumes = Arc::new(parse_volumes(&args.volumes)?);
 
     anyhow::ensure!(
@@ -68,7 +68,7 @@ pub async fn run_server(args: ServerArgs) -> Result<()> {
     );
     anyhow::ensure!(
         !policy.is_empty() || args.file || args.rsync,
-        "no features enabled: pass at least one of -t/--tunnel, -f/--file, -r/--rsync"
+        "no features enabled: pass at least one of -t/--target, -f/--file, -r/--rsync"
     );
     anyhow::ensure!(
         !volumes.is_empty() || !(args.file || args.rsync),
@@ -96,7 +96,7 @@ pub async fn run_server(args: ServerArgs) -> Result<()> {
     }
     if policy.is_open() {
         eprintln!(
-            "WARNING: open proxy enabled (-t '*'): any client with this node id can reach \
+            "WARNING: open proxy enabled (--target '*'): any client with this node id can reach \
              anything this host can, including localhost and the LAN"
         );
     }

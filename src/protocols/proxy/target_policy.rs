@@ -2,7 +2,7 @@ use anyhow::{Context, Result, bail, ensure};
 use std::fmt;
 use std::str::FromStr;
 
-/// Host half of a `-t/--tunnel` pattern. Matched against the hostname *string* the
+/// Host half of a `-t/--target` pattern. Matched against the hostname *string* the
 /// client sends, before any DNS resolution — so `localhost` does not admit `127.0.0.1`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum HostPattern {
@@ -14,14 +14,14 @@ enum HostPattern {
     Suffix(String),
 }
 
-/// Port half of a `-t/--tunnel` pattern: `*`, `22`, or an inclusive range `8000-8100`.
+/// Port half of a `-t/--target` pattern: `*`, `22`, or an inclusive range `8000-8100`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PortPattern {
     Any,
     Range(u16, u16),
 }
 
-/// One `-t/--tunnel` entry: `<host-pattern>:<port-pattern>`, or bare `*` (= `*:*`).
+/// One `-t/--target` entry: `<host-pattern>:<port-pattern>`, or bare `*` (= `*:*`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TargetPattern {
     host: HostPattern,
@@ -85,21 +85,21 @@ impl FromStr for TargetPattern {
         if s == "*" {
             return Ok(TargetPattern { host: HostPattern::Any, port: PortPattern::Any });
         }
-        ensure!(s != "*.*", "invalid --tunnel {raw:?}: use '*' to match any host and port");
+        ensure!(s != "*.*", "invalid --target {raw:?}: use '*' to match any host and port");
         let (host, port) = if s.starts_with('[') {
             let (host, port) = s
                 .split_once("]:")
-                .with_context(|| format!("invalid --tunnel {raw:?}: expected [ipv6]:port"))?;
+                .with_context(|| format!("invalid --target {raw:?}: expected [ipv6]:port"))?;
             (format!("{host}]"), port)
         } else {
             let (host, port) = s
                 .rsplit_once(':')
-                .with_context(|| format!("invalid --tunnel {raw:?}: expected host:port (or '*')"))?;
-            ensure!(!host.contains(':'), "invalid --tunnel {raw:?}: IPv6 hosts must be bracketed, e.g. [::1]:22");
+                .with_context(|| format!("invalid --target {raw:?}: expected host:port (or '*')"))?;
+            ensure!(!host.contains(':'), "invalid --target {raw:?}: IPv6 hosts must be bracketed, e.g. [::1]:22");
             (host.to_string(), port)
         };
-        let host = host.parse().with_context(|| format!("invalid --tunnel {raw:?}"))?;
-        let port = port.parse().with_context(|| format!("invalid --tunnel {raw:?}"))?;
+        let host = host.parse().with_context(|| format!("invalid --target {raw:?}"))?;
+        let port = port.parse().with_context(|| format!("invalid --target {raw:?}"))?;
         Ok(TargetPattern { host, port })
     }
 }
@@ -139,7 +139,7 @@ impl fmt::Display for TargetPattern {
     }
 }
 
-/// The set of TCP targets the server will dial on a client's behalf, from `-t/--tunnel`.
+/// The set of TCP targets the server will dial on a client's behalf, from `-t/--target`.
 /// Empty means TCP proxying is disabled.
 #[derive(Debug, Clone, Default)]
 pub struct TargetPolicy {

@@ -27,8 +27,8 @@ pub struct ServerArgs {
     pub volumes: Vec<String>,
     /// allow TCP proxying (socks5/http/tunnel clients) to targets matching host:port;
     /// host may be `*` or `*.domain`, port may be `*` or `lo-hi`; bare `*` allows everything (repeatable)
-    #[arg(short = 't', long = "tunnel", value_name = "PATTERN", env = "PROXY_RS_TUNNEL", value_delimiter = ',')]
-    pub tunnel: Vec<String>,
+    #[arg(short = 't', long = "target", alias = "tunnel", value_name = "PATTERN", env = "PROXY_RS_ALLOW_TARGET", value_delimiter = ',')]
+    pub target: Vec<String>,
     /// allow clients to send files into --volume directories
     #[arg(short = 'f', long = "file", env = "PROXY_RS_SERVE_FILE")]
     pub file: bool,
