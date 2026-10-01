@@ -8,6 +8,7 @@ use tracing::{error, info};
 use crate::{protocols::codec::StreamCodec, stream_helpers::copy_bytes};
 
 use crate::protocols::{ack::Ack, file_send::file_send_header::FileSendHeader, volume_paths::safe_join_dir};
+use crate::identity::short_id;
 
 #[derive(Debug, Clone)]
 pub struct FileServerProtocolV1 {
@@ -73,7 +74,7 @@ fn resolve_destination(volumes: &HashMap<String, PathBuf>, header: &FileSendHead
 
 impl FileServerProtocolV1 {
     async fn handle(&self, connection: Connection) -> anyhow::Result<()> {
-        info!("Accepted file_send connection from {}", connection.remote_id());
+        info!("Accepted file_send connection from {}", short_id(connection.remote_id()));
         let alpn_string = String::from_utf8(connection.alpn().to_vec())?;
         let (mut iroh_send, mut iroh_recv) = connection.accept_bi().await?;
 

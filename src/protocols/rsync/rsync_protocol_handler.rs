@@ -11,6 +11,7 @@ use tracing::{error, info, warn};
 
 use crate::protocols::{ack::Ack, codec::StreamCodec, rsync::rsync_header::RsyncHeader, volume_paths::{parse_volume_path, safe_join_dir}};
 use crate::stream_helpers::proxy_process_streams;
+use crate::identity::short_id;
 
 #[derive(Debug, Clone)]
 pub struct RsyncServerProtocolV1 {
@@ -64,7 +65,7 @@ impl RsyncServerProtocolV1 {
     }
 
     async fn handle(&self, connection: Connection) -> anyhow::Result<()> {
-        println!("Accepted rsync connection from {}", connection.remote_id());
+        println!("Accepted rsync connection from {}", short_id(connection.remote_id()));
         let (mut iroh_send, mut iroh_recv) = connection.accept_bi().await?;
 
         let header = RsyncHeader::decode(&mut iroh_recv).await?;

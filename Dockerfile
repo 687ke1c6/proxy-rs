@@ -1,22 +1,27 @@
-FROM rust:trixie
+FROM rust:alpine AS builder
+
+# musl-dev/gcc: ring's C code needs them to compile and link.
+RUN apk add --no-cache gcc musl-dev
+
+WORKDIR /app
+COPY . .
+
+RUN cargo install --path .
+
+FROM alpine AS runner
 
 ARG UID=1000
 ARG GID=1000
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    ca-certificates \
-    && apt-get autoremove -y \
-    && rm -rf /var/lib/apt/lists/*
+# rsync: needed by `server -r` and `client sync-rsh`.
+RUN apk add --no-cache ca-certificates rsync
 
-RUN groupadd -g ${GID} rust && \
-    useradd -m -u ${UID} -g ${GID} -s /bin/bash rust
+RUN addgroup -g ${GID} rust && \
+    adduser -D -u ${UID} -G rust rust
 
-RUN mkdir /app && chown rust:rust /app
+COPY --from=builder /usr/local/cargo/bin/proxy-rs /usr/local/bin/proxy-rs
 
 USER rust
+WORKDIR /home/rust
 
-WORKDIR /app
-COPY --chown=rust:rust . .
-
-RUN cargo install --path .
+ENTRYPOINT ["proxy-rs"]

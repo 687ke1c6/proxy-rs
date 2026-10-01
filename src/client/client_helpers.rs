@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
 use crate::config_dir::config_dir;
+use crate::identity::short_id;
 
 const FILENAME: &str = "nodes.yaml";
 
@@ -57,7 +58,7 @@ pub fn load_node_id_from_file() -> Result<(String, String)> {
 
     let mut labels: Vec<String> = ordered
         .iter()
-        .map(|e| format!("{} [{}...]", e.name, &e.key[..16]))
+        .map(|e| format!("{} [{}]", e.name, short_id(&e.key)))
         .collect();
     labels.push(NEW_ENTRY_LABEL.to_string());
 

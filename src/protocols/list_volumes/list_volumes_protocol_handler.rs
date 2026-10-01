@@ -5,6 +5,7 @@ use std::sync::Arc;
 use iroh::{endpoint::Connection, protocol::{AcceptError, ProtocolHandler}};
 use tracing::info;
 
+use crate::identity::short_id;
 use crate::protocols::{
     codec::StreamCodec,
     list_volumes::list_volumes_header::{ListVolumesRequest, ListVolumesResponse, VolumeEntry},
@@ -24,7 +25,7 @@ impl ProtocolHandler for ListVolumesServerProtocolV1 {
 
 impl ListVolumesServerProtocolV1 {
     async fn handle(&self, connection: Connection) -> anyhow::Result<()> {
-        info!("Accepted list_volumes connection from {}", connection.remote_id());
+        info!("Accepted list_volumes connection from {}", short_id(connection.remote_id()));
         let (mut send, mut recv) = connection.accept_bi().await?;
 
         let request = ListVolumesRequest::decode(&mut recv).await?;
@@ -41,7 +42,7 @@ impl ListVolumesServerProtocolV1 {
         send.finish()?;
         connection.closed().await;
 
-        info!("Sent volume list to {}", connection.remote_id());
+        info!("Sent volume list to {}", short_id(connection.remote_id()));
         Ok(())
     }
 }

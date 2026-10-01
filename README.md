@@ -46,7 +46,7 @@ proxy-rs server --allow-any --target '*'
 ```
 
 ```text
-proxy-rs v0.1.0
+proxy-rs v0.1.1
 Mode: server
 Features:
   tcp proxy -> *:*
@@ -69,7 +69,7 @@ proxy-rs client tunnel --listen 127.0.0.1:2222 --remote-host localhost --remote-
 ```
 
 ```text
-proxy-rs v0.1.0
+proxy-rs v0.1.1
 Mode: client tunnel
 Listening on: 127.0.0.1:2222
 Forwarding to: localhost:22
@@ -129,7 +129,7 @@ proxy-rs <server|client> ...
 
 ### Server
 
-Whitelist clients by specifying client node id's in `~/proxy-rs/authorized-clients`. Or explicitly on the command line `proxy-rs server --allow <client-node-id>`. Or allow any client with `--allow-any` (unsafe).
+Whitelist clients by specifying client node id's in `~/proxy-rs/authorized-clients`. Anything after the id on a line is a label (e.g. `3f1eb531...58d Dan Bowers PC`), shown in the server's `Client connected:` output. Or explicitly on the command line `proxy-rs server --allow <client-node-id>`. Or allow any client with `--allow-any` (unsafe).
 
 The server refuses to start if no client is allowed and `--allow-any` isn't set.
 

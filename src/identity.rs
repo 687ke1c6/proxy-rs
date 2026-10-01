@@ -10,6 +10,17 @@ use crate::config_dir::config_dir;
 pub const SERVER_KEY_FILE: &str = "server-key";
 pub const CLIENT_KEY_FILE: &str = "client-key";
 
+/// Shortened node id for console output: first 5 and last 3 characters, e.g. `3f1eb...58d`.
+/// Full ids are only printed where they must be copied: the server's startup line and
+/// `client whoami`.
+pub fn short_id(id: impl std::fmt::Display) -> String {
+    let id = id.to_string();
+    if id.len() <= 11 || !id.is_ascii() {
+        return id;
+    }
+    format!("{}...{}", &id[..5], &id[id.len() - 4..])
+}
+
 /// Loads the hex-encoded secret key at `<config_dir>/<file_name>`, generating and saving
 /// a new one if it doesn't exist yet. The key determines this node's stable node ID,
 /// which is (re)written to `<file_name>.pub` so it's readable without parsing the key.
@@ -56,11 +67,23 @@ fn create_key_file(path: &Path) -> Result<()> {
     let _ = std::fs::remove_file(&tmp);
     match linked {
         Ok(()) => {
-            info!("Generated new secret key, saved to {} {}", path.display(), key.public());
+            info!("Generated new secret key, saved to {} {}", path.display(), short_id(key.public()));
             Ok(())
         }
         // Another process created it between our exists() check and now; use theirs.
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
         Err(e) => Err(e).with_context(|| format!("failed to write key file: {}", path.display())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn short_id_keeps_first_five_and_last_three() {
+        let id = "3f1eb5317373e13e8b67e679d40cc2f51539c9055cbd0468998ca4a45771d58d";
+        assert_eq!(short_id(id), "3f1eb...58d");
+        assert_eq!(short_id("abc"), "abc");
     }
 }

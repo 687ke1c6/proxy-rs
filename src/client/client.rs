@@ -12,7 +12,7 @@ use crate::{protocols::{ack::Ack, codec::StreamCodec, file_send::{alpn::FILE_ALP
 use crate::socks5;
 use crate::http;
 use crate::client::client_helpers::resolve_node_id;
-use crate::identity::{CLIENT_KEY_FILE, load_or_create_secret_key};
+use crate::identity::{CLIENT_KEY_FILE, load_or_create_secret_key, short_id};
 
 #[derive(Debug, Clone, Copy)]
 pub enum ProxyType {
@@ -70,9 +70,9 @@ async fn ping_server(endpoint: &Endpoint, server_node_id: EndpointId) -> Result<
         && &close.reason[..] == b"not allowed"
     {
         anyhow::bail!(
-            "server refused this client: node id {} is not in its allowlist; \
-             ask the server operator to add it with --allow or to their authorized-clients file",
-            endpoint.id()
+            "server refused this client: node id {} is not in its allowlist; ask the server operator \
+             to add it with --allow or to their authorized-clients file (`proxy-rs client whoami` prints the full id)",
+            short_id(endpoint.id())
         );
     }
     result
@@ -99,7 +99,7 @@ pub async fn run_list_volumes(server_node_id_str: Option<String>, name: Option<S
     let result = async {
         ping_server(&endpoint, server_node_id).await?;
         let conn = endpoint.connect(server_node_id, LIST_VOLUMES_ALPN_V1).await?;
-        println!("Connected to \"{node_name}\" [{server_node_id}]");
+        println!("Connected to \"{node_name}\" [{}]", short_id(server_node_id));
 
         let (mut iroh_send, mut iroh_recv) = conn.open_bi().await?;
         ListVolumesRequest { version: 1 }.encode(&mut iroh_send).await?;
@@ -203,7 +203,7 @@ pub async fn run_send_file(file_path: String, server_node_id_str: Option<String>
     let result = async {
         ping_server(&endpoint, server_node_id).await?;
         let conn = endpoint.connect(server_node_id, FILE_ALPN_V1).await?;
-        println!("Connected to \"{node_name}\" [{server_node_id}]");
+        println!("Connected to \"{node_name}\" [{}]", short_id(server_node_id));
 
         let (mut iroh_send, mut iroh_recv) = conn.open_bi().await?;
         info!("sending file header");
@@ -276,7 +276,7 @@ pub async fn run_sync_rsh(argv: Vec<String>, server_node_id_str: Option<String>,
     let result = async {
         ping_server(&endpoint, server_node_id).await?;
         let conn = endpoint.connect(server_node_id, RSYNC_ALPN_V1).await?;
-        info!("Connected to \"{node_name}\" [{server_node_id}]");
+        info!("Connected to \"{node_name}\" [{}]", short_id(server_node_id));
 
         let (mut iroh_send, mut iroh_recv) = conn.open_bi().await?;
         RsyncHeader { version: 1, argv }.encode(&mut iroh_send).await?;
@@ -318,8 +318,8 @@ pub async fn run_tcp_client(typ: ProxyType, bind_addr: String, tunnel_target: Op
     let result = async {
         ping_server(&endpoint, server_node_id).await?;
 
-        info!("Client NodeId: {}", endpoint.id());
-        println!("Connected to \"{node_name}\" [{server_node_id}]");
+        info!("Client NodeId: {}", short_id(endpoint.id()));
+        println!("Connected to \"{node_name}\" [{}]", short_id(server_node_id));
 
         let listener = TcpListener::bind(&bind_addr).await?;
         info!("Listening for {:?} connections on {bind_addr}", typ);
@@ -370,7 +370,7 @@ enum ProxyOpen {
 /// Opens a `proxy-rs/tcp/2` stream to `host:port` via the server and waits for its verdict.
 /// `Err` means the server itself couldn't be reached or broke protocol.
 async fn open_proxy_stream(endpoint: &Endpoint, server_node_id: EndpointId, host: &str, port: u16) -> Result<ProxyOpen> {
-    info!("Connecting to iroh server {server_node_id}");
+    info!("Connecting to iroh server {}", short_id(server_node_id));
     let conn = endpoint.connect(server_node_id, TCP_PROXY_ALPN_V2).await?;
     let (mut iroh_send, mut iroh_recv) = conn.open_bi().await?;
 
@@ -472,7 +472,6 @@ async fn handle_socks5(
             anyhow::bail!("server refused {host}:{port}: {}", ack.msg);
         }
     };
-    println!("Connected to iroh server {server_node_id}");
     socks5::reply(&mut tcp, socks5::REP_SUCCEEDED).await?;
 
     let (tcp_read, tcp_write) = tcp.into_split();

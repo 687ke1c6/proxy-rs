@@ -1,17 +1,21 @@
 use anyhow::{Context, Result};
-use iroh::EndpointId;
-use std::collections::HashSet;
+use iroh::{EndpointId, endpoint::{AfterHandshakeOutcome, ConnectionInfo, EndpointHooks}};
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::PathBuf;
 use std::str::FromStr;
 use tracing::{error, warn};
+
+use crate::identity::short_id;
+use crate::protocols::ping::alpn::PING_ALPN_V1;
 
 pub const FILENAME: &str = "authorized-clients";
 
 /// Written to a new `authorized-clients` file; only comments, so it allows no one.
 const TEMPLATE: &str = "\
 # Client node ids allowed to connect to this proxy-rs server, one per line.
-# Anything after the id is a comment. Get a client's id with `proxy-rs client whoami`.
+# Anything after the id is a label, shown when that client connects.
+# Get a client's id with `proxy-rs client whoami`.
 # This file is re-read on every connection: edit it to add or revoke clients, no restart needed.
 #
 # 7c41d2...9e0b  laptop
@@ -20,24 +24,33 @@ const TEMPLATE: &str = "\
 /// Which client node IDs may connect to the server: `--allow` IDs (fixed at startup)
 /// plus the `authorized-clients` file, which is re-read on every connection so clients
 /// can be added or revoked without a restart.
+#[derive(Debug)]
 pub struct ClientAllowlist {
     fixed: HashSet<EndpointId>,
     file: PathBuf,
 }
 
+/// Whether a client may connect, and its label from `authorized-clients` if it has one.
+#[derive(Debug, PartialEq)]
+pub enum Access {
+    Allowed { label: Option<String> },
+    Denied,
+}
+
 /// Parses `authorized-clients`: one node ID per line, optionally followed by whitespace
-/// and a free-form comment (e.g. a name). Blank lines and `#` comments are ignored.
-fn parse(content: &str) -> Result<HashSet<EndpointId>> {
-    let mut ids = HashSet::new();
+/// and a free-form label (e.g. `Dan's PC`). Blank lines and `#` comments are ignored.
+fn parse(content: &str) -> Result<HashMap<EndpointId, Option<String>>> {
+    let mut ids = HashMap::new();
     for (i, line) in content.lines().enumerate() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        let id = line.split_whitespace().next().unwrap_or(line);
+        let (id, label) = line.split_once(char::is_whitespace).unwrap_or((line, ""));
         let id = EndpointId::from_str(id)
             .with_context(|| format!("line {}: invalid node id {id:?}", i + 1))?;
-        ids.insert(id);
+        let label = label.trim();
+        ids.insert(id, (!label.is_empty()).then(|| label.to_string()));
     }
     Ok(ids)
 }
@@ -66,38 +79,83 @@ impl ClientAllowlist {
         }
     }
 
-    /// Reads the `authorized-clients` file. A missing file counts as empty.
-    pub fn read_file(&self) -> Result<HashSet<EndpointId>> {
+    /// Reads the `authorized-clients` file: id -> optional label. A missing file counts as empty.
+    pub fn read_file(&self) -> Result<HashMap<EndpointId, Option<String>>> {
         let content = match std::fs::read_to_string(&self.file) {
             Ok(content) => content,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(HashSet::new()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(HashMap::new()),
             Err(e) => return Err(e).with_context(|| format!("failed to read {}", self.file.display())),
         };
         parse(&content).with_context(|| format!("invalid {}", self.file.display()))
     }
 
-    pub fn fixed_count(&self) -> usize {
-        self.fixed.len()
+    /// Number of distinct clients currently allowed: `--allow` IDs plus the file's.
+    pub fn count(&self) -> Result<usize> {
+        let mut ids: HashSet<EndpointId> = self.read_file()?.into_keys().collect();
+        ids.extend(&self.fixed);
+        Ok(ids.len())
     }
+
 
     pub fn file(&self) -> &PathBuf {
         &self.file
     }
 
-    /// Fails closed: if the file can't be read or parsed, only `--allow` IDs get in.
-    pub fn allows(&self, id: EndpointId) -> bool {
-        let allowed = self.fixed.contains(&id)
-            || match self.read_file() {
-                Ok(ids) => ids.contains(&id),
-                Err(e) => {
-                    error!("{e:#}; denying clients not given via --allow");
-                    false
-                }
-            };
-        if !allowed {
-            warn!("Rejected connection from unauthorized client {id}");
+    /// Re-reads the file, so edits take effect on the next connection. Fails closed: if the
+    /// file can't be read or parsed, only `--allow` IDs get in (without labels).
+    pub fn check(&self, id: EndpointId) -> Access {
+        let file_label = match self.read_file() {
+            Ok(mut ids) => ids.remove(&id),
+            Err(e) => {
+                error!("{e:#}; denying clients not given via --allow");
+                None
+            }
+        };
+        match file_label {
+            Some(label) => Access::Allowed { label },
+            None if self.fixed.contains(&id) => Access::Allowed { label: None },
+            None => {
+                warn!("Rejected connection from unauthorized client {}", short_id(id));
+                Access::Denied
+            }
         }
-        allowed
+    }
+}
+
+/// Server endpoint hook that admits only allowlisted clients (every ALPN, before the router
+/// hands the connection to a protocol handler) and prints each client session as it starts.
+/// `allowlist: None` (`--allow-any`) admits everyone.
+#[derive(Debug)]
+pub struct ClientGate {
+    pub allowlist: Option<ClientAllowlist>,
+}
+
+impl EndpointHooks for ClientGate {
+    async fn after_handshake<'a>(&'a self, conn: &'a ConnectionInfo) -> AfterHandshakeOutcome {
+        if !conn.side().is_server() {
+            return AfterHandshakeOutcome::Accept;
+        }
+        let id = conn.remote_id();
+        let label = match &self.allowlist {
+            None => None,
+            Some(list) => match list.check(id) {
+                Access::Allowed { label } => label,
+                // Same close reason as iroh's `AccessLimit`; the client's `ping_server` looks for it.
+                Access::Denied => {
+                    return AfterHandshakeOutcome::Reject { error_code: 0u32.into(), reason: b"not allowed".to_vec() };
+                }
+            },
+        };
+        // Every client operation pings first, so a ping marks a client session starting;
+        // other ALPNs (e.g. one connection per proxied socket) would be too noisy to print.
+        // Printed rather than logged so it's visible at the default (error-only) log level.
+        if conn.alpn() == PING_ALPN_V1 {
+            match label {
+                Some(label) => println!("Client connected: {label} [{}]", short_id(id)),
+                None => println!("Client connected: {}", short_id(id)),
+            }
+        }
+        AfterHandshakeOutcome::Accept
     }
 }
 
@@ -113,9 +171,9 @@ mod tests {
     #[test]
     fn parses_ids_comments_and_blank_lines() {
         let (a, b) = (id(), id());
-        let content = format!("# laptop and phone\n\n{a}\n  {b}   phone  \n");
+        let content = format!("# laptop and phone\n\n{a}\n  {b}   Dan Bowers PC  \n");
         let ids = parse(&content).unwrap();
-        assert_eq!(ids, HashSet::from([a, b]));
+        assert_eq!(ids, HashMap::from([(a, None), (b, Some("Dan Bowers PC".to_string()))]));
     }
 
     #[test]
@@ -135,8 +193,8 @@ mod tests {
         let a = id();
         let list = ClientAllowlist::new(&[a.to_string()], PathBuf::from("/nonexistent/authorized-clients")).unwrap();
         assert!(list.read_file().unwrap().is_empty());
-        assert!(list.allows(a));
-        assert!(!list.allows(id()));
+        assert_eq!(list.check(a), Access::Allowed { label: None });
+        assert_eq!(list.check(id()), Access::Denied);
     }
 
     #[test]
@@ -148,15 +206,15 @@ mod tests {
         let list = ClientAllowlist::new(&[], path.clone()).unwrap();
 
         std::fs::write(&path, format!("{a}\n")).unwrap();
-        assert!(list.allows(a));
-        assert!(!list.allows(b));
+        assert_eq!(list.check(a), Access::Allowed { label: None });
+        assert_eq!(list.check(b), Access::Denied);
 
-        std::fs::write(&path, format!("{b}\n")).unwrap();
-        assert!(!list.allows(a), "revoked by editing the file");
-        assert!(list.allows(b), "added by editing the file");
+        std::fs::write(&path, format!("{b} phone\n")).unwrap();
+        assert_eq!(list.check(a), Access::Denied, "revoked by editing the file");
+        assert_eq!(list.check(b), Access::Allowed { label: Some("phone".to_string()) }, "added and labelled by editing the file");
 
         std::fs::write(&path, format!("{b}\ngarbage\n")).unwrap();
-        assert!(!list.allows(b), "unparseable file denies everyone");
+        assert_eq!(list.check(b), Access::Denied, "unparseable file denies everyone");
 
         std::fs::remove_dir_all(&dir).unwrap();
     }
