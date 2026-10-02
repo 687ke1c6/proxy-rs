@@ -38,7 +38,7 @@ The single binary takes a `server` or `client` subcommand (`clap::Subcommand`, e
 - `client tunnel` → ssh `-L`-style forwarding; `-l`/`--listen <addr>` (local bind) plus `--remote-host`/`--remote-port` (fixed remote target)
 - `client file <path>` → file sender client (positional path), writing into a server volume (`-t`/`--target` selects which)
 - `client volumes` → prints the server's exposed volumes as `name:path`, one per line
-- `client whoami` → prints this client's node id (from `client-key`) and nothing else: no banner, logs to stderr, like `sync-rsh`, so `$(proxy-rs client whoami)` works; no network
+- `client whoami` → prints this client's node id (from `client-key`) and nothing else on stdout: the `proxy-rs vX.Y.Z` banner and logs go to stderr, like `sync-rsh`, so `$(proxy-rs client whoami)` works; no network
 - `client sync-rsh` → rsync transport over iroh (`proxy-rs/rsync/1`), not run directly but passed to rsync's `-e` in place of `ssh`: `rsync -av -e "'<proxy-rs>' client sync-rsh -n <node-id>" ./dir/ "x:<volume>/<dir>/"`. The host before `:` is a placeholder; the path must start with a server volume name. Push only; requires `-n`/`--name` (stdin is rsync's pipe, so no interactive menu), and `rsync` installed on both ends
 
 `-n`/`--node-id` and `--name` are global on `client` (valid before or after the mode subcommand), since every mode needs to resolve a server node id. `--config-dir`/`-d` is global on the whole binary (valid before or after `server`/`client` and, for `client`, before or after the mode too) and overrides the persistent state directory (see below); if omitted, it defaults to `~/.proxy-rs`.

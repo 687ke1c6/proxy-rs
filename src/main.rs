@@ -15,17 +15,15 @@ mod stream_helpers;
 use cli::{Cli, ClientArgs, ClientMode, Command, FileArgs, HttpArgs, Socks5Args, SyncRshArgs, TunnelArgs, VolumesArgs, WhoamiArgs};
 use client::client::{run_list_volumes, run_send_file, run_sync_rsh, run_tcp_client, ProxyType};
 
-fn print_banner() {
-    println!("{} v{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
-}
+const BANNER: &str = concat!(env!("CARGO_PKG_NAME"), " v", env!("CARGO_PKG_VERSION"));
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     // In sync-rsh mode stdout is rsync's protocol pipe, and whoami's stdout is meant to be
-    // captured (`--allow $(proxy-rs client whoami)`), so the banner is skipped and logs go
-    // to stderr (rsync passes that through to the user) instead of stdout.
+    // captured (`--allow $(proxy-rs client whoami)`), so the banner and logs go to stderr
+    // (rsync passes that through to the user) instead of stdout.
     let quiet_stdout = matches!(
         &cli.command,
         Command::Client(ClientArgs { mode: ClientMode::SyncRsh(_) | ClientMode::Whoami(_), .. })
@@ -38,9 +36,10 @@ async fn main() -> Result<()> {
         );
     if quiet_stdout {
         subscriber.with_writer(std::io::stderr).init();
+        eprintln!("{BANNER}");
     } else {
         subscriber.init();
-        print_banner();
+        println!("{BANNER}");
     }
 
     if let Some(dir) = cli.config_dir {

@@ -24,4 +24,4 @@ COPY --from=builder /usr/local/cargo/bin/proxy-rs /usr/local/bin/proxy-rs
 USER rust
 WORKDIR /home/rust
 
-ENTRYPOINT ["proxy-rs"]
+CMD ["proxy-rs", "server", "-t", "'*'" "--allow-any"]

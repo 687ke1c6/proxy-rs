@@ -2,7 +2,7 @@ use clap::{Args, Parser, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(about = "Iroh proxy (SOCKS5 + HTTP + tunnel) — server and client modes")]
+#[command(version, about = "Iroh proxy (SOCKS5 + HTTP + tunnel) — server and client modes")]
 pub struct Cli {
     /// defaults to ~/.proxy-rs
     #[arg(short = 'd', long, value_name = "DIR", env = "PROXY_RS_CONFIG_DIR", global = true)]
