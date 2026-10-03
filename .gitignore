@@ -2,3 +2,4 @@ target
 *_bak
 .proxy-rs
 *.gz
+.env

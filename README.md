@@ -146,12 +146,12 @@ All server arguments:
 
 | Flag | Env var | Description |
 |---|---|---|
-| `-t, --target <PATTERN>` | `PROXY_RS_ALLOW_TARGET` (comma-separated) | Allow TCP proxying (SOCKS5, HTTP and tunnel clients) to targets matching `PATTERN`. Repeatable. |
-| `-f, --file` | `PROXY_RS_SERVE_FILE` | Allow clients to send files into volumes. Needs at least one `-v`. |
-| `-r, --rsync` | `PROXY_RS_RSYNC` | Allow rsync pushes into volumes. Needs at least one `-v`, and `rsync` on the server. |
+| `-t, --target <PATTERN>` | `PROXY_RS_SERVER_TARGET` (comma-separated) | Allow TCP proxying (SOCKS5, HTTP and tunnel clients) to targets matching `PATTERN`. Repeatable. |
+| `-f, --file` | `PROXY_RS_SERVER_FILE` | Allow clients to send files into volumes. Needs at least one `-v`. |
+| `-r, --rsync` | `PROXY_RS_SERVER_RSYNC` | Allow rsync pushes into volumes. Needs at least one `-v`, and `rsync` on the server. |
 | `-v, --volume name:path` | — | Declare a directory clients can write into, under `name`. Repeatable. The path must exist. |
-| `--allow <NODE_ID>` | `PROXY_RS_ALLOW` (comma-separated) | Allow a client to connect. Repeatable. Merged with the `authorized-clients` file. |
-| `--allow-any` | `PROXY_RS_ALLOW_ANY` | Let any client that knows the server's node ID connect. Can't be combined with `--allow`. |
+| `--allow <NODE_ID>` | `PROXY_RS_SERVER_ALLOW` (comma-separated) | Allow a client to connect. Repeatable. Merged with the `authorized-clients` file. |
+| `--allow-any` | `PROXY_RS_SERVER_ALLOW_ANY` | Let any client that knows the server's node ID connect. Can't be combined with `--allow`. |
 
 ### Client
 
@@ -261,7 +261,7 @@ rsync -av -e "proxy-rs client sync-rsh --name 'Brave Otter'" \
 |---|---|---|
 | `-d, --config-dir <DIR>` | `PROXY_RS_CONFIG_DIR` | State directory (default `~/.proxy-rs`). |
 
-You can set almost every flag with an environment variable: `PROXY_RS_LISTEN`, `PROXY_RS_REMOTE_HOST`, `PROXY_RS_REMOTE_PORT`, `PROXY_RS_FILE`, `PROXY_RS_TARGET` and `PROXY_RS_OVERWRITE` on the client, and `PROXY_RS_ALLOW_TARGET`, `PROXY_RS_SERVE_FILE`, `PROXY_RS_RSYNC`, `PROXY_RS_ALLOW` and `PROXY_RS_ALLOW_ANY` on the server. A flag on the command line always wins.
+You can set almost every flag with an environment variable: `PROXY_RS_CLIENT_LISTEN`, `PROXY_RS_CLIENT_REMOTE_HOST`, `PROXY_RS_CLIENT_REMOTE_PORT`, `PROXY_RS_CLIENT_FILE`, `PROXY_RS_CLIENT_TARGET` and `PROXY_RS_CLIENT_OVERWRITE` on the client, and `PROXY_RS_SERVER_TARGET`, `PROXY_RS_SERVER_FILE`, `PROXY_RS_SERVER_RSYNC`, `PROXY_RS_SERVER_ALLOW` and `PROXY_RS_SERVER_ALLOW_ANY` on the server. A flag on the command line always wins.
 
 The default log level is `error`. For more detail, use `RUST_LOG`:
 

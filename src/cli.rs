@@ -27,30 +27,30 @@ pub struct ServerArgs {
     pub volumes: Vec<String>,
     /// allow TCP proxying (socks5/http/tunnel clients) to targets matching host:port;
     /// host may be `*` or `*.domain`, port may be `*` or `lo-hi`; bare `*` allows everything (repeatable)
-    #[arg(short = 't', long = "target", alias = "tunnel", value_name = "PATTERN", env = "PROXY_RS_ALLOW_TARGET", value_delimiter = ',')]
+    #[arg(short = 't', long = "target", alias = "tunnel", value_name = "PATTERN", env = "PROXY_RS_SERVER_TARGET", value_delimiter = ',')]
     pub target: Vec<String>,
     /// allow clients to send files into --volume directories
-    #[arg(short = 'f', long = "file", env = "PROXY_RS_SERVE_FILE")]
+    #[arg(short = 'f', long = "file", env = "PROXY_RS_SERVER_FILE")]
     pub file: bool,
     /// allow rsync pushes into --volume directories (needs rsync installed)
-    #[arg(short = 'r', long = "rsync", env = "PROXY_RS_RSYNC")]
+    #[arg(short = 'r', long = "rsync", env = "PROXY_RS_SERVER_RSYNC")]
     pub rsync: bool,
     /// client node id allowed to connect, as printed by `client whoami` (repeatable);
     /// merged with the ids in <config-dir>/authorized-clients
-    #[arg(long = "allow", value_name = "NODE_ID", env = "PROXY_RS_ALLOW", value_delimiter = ',')]
+    #[arg(long = "allow", value_name = "NODE_ID", env = "PROXY_RS_SERVER_ALLOW", value_delimiter = ',')]
     pub allow: Vec<String>,
     /// let any client that knows this server's node id connect (no client allowlist)
-    #[arg(long = "allow-any", env = "PROXY_RS_ALLOW_ANY", conflicts_with = "allow")]
+    #[arg(long = "allow-any", env = "PROXY_RS_SERVER_ALLOW_ANY", conflicts_with = "allow")]
     pub allow_any: bool,
 }
 
 #[derive(Args)]
 pub struct ClientArgs {
     /// iroh ticket to connect to
-    #[arg(short, long, env = "PROXY_RS_NODE_ID", global = true)]
+    #[arg(short, long, env = "PROXY_RS_CLIENT_NODE_ID", global = true)]
     pub node_id: Option<String>,
     /// saved name for the server node id
-    #[arg(long, env = "PROXY_RS_NAME", global = true)]
+    #[arg(long, env = "PROXY_RS_CLIENT_NAME", global = true)]
     pub name: Option<String>,
 
     #[command(subcommand)]
@@ -79,42 +79,42 @@ pub enum ClientMode {
 #[derive(Args)]
 pub struct Socks5Args {
     /// local address to listen on, e.g. 127.0.0.1:1080
-    #[arg(short, long, env = "PROXY_RS_LISTEN")]
+    #[arg(short, long, env = "PROXY_RS_CLIENT_LISTEN")]
     pub listen: String,
 }
 
 #[derive(Args)]
 pub struct HttpArgs {
     /// local address to listen on, e.g. 127.0.0.1:8080
-    #[arg(short, long, env = "PROXY_RS_LISTEN")]
+    #[arg(short, long, env = "PROXY_RS_CLIENT_LISTEN")]
     pub listen: String,
 }
 
 #[derive(Args)]
 pub struct TunnelArgs {
     /// local address to listen on, e.g. 127.0.0.1:9000
-    #[arg(short, long, env = "PROXY_RS_LISTEN")]
+    #[arg(short, long, env = "PROXY_RS_CLIENT_LISTEN")]
     pub listen: String,
     /// fixed remote host to forward every connection to
-    #[arg(long, env = "PROXY_RS_REMOTE_HOST")]
+    #[arg(long, env = "PROXY_RS_CLIENT_REMOTE_HOST")]
     pub remote_host: String,
     /// fixed remote port to forward every connection to
-    #[arg(long, env = "PROXY_RS_REMOTE_PORT")]
+    #[arg(long, env = "PROXY_RS_CLIENT_REMOTE_PORT")]
     pub remote_port: u16,
 }
 
 #[derive(Args)]
 pub struct FileArgs {
     /// local file to send
-    #[arg(env = "PROXY_RS_FILE")]
+    #[arg(env = "PROXY_RS_CLIENT_FILE")]
     pub file: String,
     /// allow overwriting existing files
-    #[arg(short, long, env = "PROXY_RS_OVERWRITE")]
+    #[arg(short, long, env = "PROXY_RS_CLIENT_OVERWRITE")]
     pub overwrite: bool,
     /// destination directory, as volume[/dir]; the file keeps its local name.
     /// Required unless the server has exactly one volume configured, in which
     /// case it's the default
-    #[arg(short = 't', long, env = "PROXY_RS_TARGET")]
+    #[arg(short = 't', long, env = "PROXY_RS_CLIENT_TARGET")]
     pub target: Option<String>,
 }
 
