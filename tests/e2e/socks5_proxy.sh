@@ -38,7 +38,7 @@ fi
 
 WORKDIR=$(mktemp -d)
 cd "$WORKDIR"
-export HOME="$WORKDIR" # isolate ~/.proxy-rs/{server-key,nodes.yaml} from the real dev files
+export HOME="$WORKDIR" # isolate ~/.proxy-rs/{server-key,known-servers} from the real dev files
 
 NCAT_PID=""
 SERVER_PID=""
@@ -81,7 +81,7 @@ for _ in $(seq 1 50); do
         cat server.log >&2
         exit 1
     fi
-    NODE_ID=$(grep -oP 'Iroh node listening \[\K[0-9a-f]+' server.log || true)
+    NODE_ID=$(grep -oxE '[0-9a-f]{64}' server.log || true)
     [[ -n "$NODE_ID" ]] && break
     sleep 0.2
 done

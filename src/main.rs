@@ -6,6 +6,7 @@ mod client;
 mod authorized_clients;
 mod config_dir;
 mod http;
+mod id_file;
 mod identity;
 mod protocols;
 mod server;
@@ -15,7 +16,8 @@ mod stream_helpers;
 use cli::{Cli, ClientArgs, ClientMode, Command, FileArgs, HttpArgs, Socks5Args, SyncRshArgs, TunnelArgs, VolumesArgs, WhoamiArgs};
 use client::client::{run_list_volumes, run_send_file, run_sync_rsh, run_tcp_client, ProxyType};
 
-const BANNER: &str = concat!(env!("CARGO_PKG_NAME"), " v", env!("CARGO_PKG_VERSION"));
+/// Start of each mode's one-line startup summary, e.g. `proxy-rs v0.1.2 server tcp=*:* clients=any`.
+pub const BANNER: &str = concat!(env!("CARGO_PKG_NAME"), " v", env!("CARGO_PKG_VERSION"));
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -23,7 +25,8 @@ async fn main() -> Result<()> {
 
     // In sync-rsh mode stdout is rsync's protocol pipe, and whoami's stdout is meant to be
     // captured (`--allow $(proxy-rs client whoami)`), so the banner and logs go to stderr
-    // (rsync passes that through to the user) instead of stdout.
+    // (rsync passes that through to the user) instead of stdout. Every other mode prints
+    // its own banner line, with its settings appended.
     let quiet_stdout = matches!(
         &cli.command,
         Command::Client(ClientArgs { mode: ClientMode::SyncRsh(_) | ClientMode::Whoami(_), .. })
@@ -36,10 +39,10 @@ async fn main() -> Result<()> {
         );
     if quiet_stdout {
         subscriber.with_writer(std::io::stderr).init();
-        eprintln!("{BANNER}");
+        let mode = if matches!(&cli.command, Command::Client(ClientArgs { mode: ClientMode::Whoami(_), .. })) { "whoami" } else { "sync-rsh" };
+        eprintln!("{BANNER} client {mode}");
     } else {
         subscriber.init();
-        println!("{BANNER}");
     }
 
     if let Some(dir) = cli.config_dir {

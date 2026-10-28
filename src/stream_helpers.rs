@@ -1,9 +1,18 @@
 use anyhow::Result;
-use iroh::endpoint::{RecvStream, SendStream};
+use iroh::endpoint::{ConnectionError, RecvStream, SendStream};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 
 /// Proxies an iroh bi-stream <-> a local read/write pair, TCP-style: EOF on one side
 /// shuts down the other side's writer (half-close) and it returns once both are done.
+/// Why a connection ended, as a ` (reason)` suffix for a console line, or empty for a
+/// deliberate close by either side (a process exited or shut down cleanly).
+pub fn close_reason_suffix(reason: &ConnectionError) -> String {
+    match reason {
+        ConnectionError::ApplicationClosed(_) | ConnectionError::LocallyClosed => String::new(),
+        reason => format!(" ({reason})"),
+    }
+}
+
 pub async fn proxy_streams<C, D>(iroh_recv: RecvStream, iroh_send: SendStream, local_read: C, local_write: D) -> Result<()>
 where
     C: AsyncRead + Unpin,

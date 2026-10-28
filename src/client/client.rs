@@ -1,6 +1,6 @@
 use std::io::IsTerminal;
-use std::str::FromStr;
 use std::sync::Arc;
+use std::time::Duration;
 use anyhow::{Context, Result};
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use iroh::{Endpoint, EndpointId, address_lookup::{self, PkarrPublisher}, endpoint::{Connection, ConnectionError, RecvStream, SendStream, presets}};
@@ -8,10 +8,11 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tracing::{error, info, warn};
 
-use crate::{protocols::{ack::Ack, codec::StreamCodec, file_send::{alpn::FILE_ALPN_V1, file_send_header::FileSendHeader}, list_volumes::{alpn::LIST_VOLUMES_ALPN_V1, list_volumes_header::{ListVolumesRequest, ListVolumesResponse}}, ping::{alpn::PING_ALPN_V1, ping_header::PingHeader}, proxy::{alpn::TCP_PROXY_ALPN_V2, proxy_header::{ACK_CONNECT_FAILED, ACK_NOT_ALLOWED, PROXY_HEADER_VERSION, ProxyHeader}}, rsync::{alpn::RSYNC_ALPN_V1, rsync_header::RsyncHeader}}, stream_helpers::{proxy_process_streams, proxy_streams}};
+use crate::{protocols::{ack::Ack, codec::StreamCodec, file_send::{alpn::FILE_ALPN_V1, file_send_header::FileSendHeader}, list_volumes::{alpn::LIST_VOLUMES_ALPN_V1, list_volumes_header::{ListVolumesRequest, ListVolumesResponse}}, ping::{alpn::PING_ALPN_V1, ping_header::PingHeader}, proxy::{alpn::TCP_PROXY_ALPN_V2, proxy_header::{ACK_CONNECT_FAILED, ACK_NOT_ALLOWED, PROXY_HEADER_VERSION, ProxyHeader}}, rsync::{alpn::RSYNC_ALPN_V1, rsync_header::RsyncHeader}}, stream_helpers::{close_reason_suffix, proxy_process_streams, proxy_streams}};
+use crate::BANNER;
 use crate::socks5;
 use crate::http;
-use crate::client::client_helpers::resolve_node_id;
+use crate::client::client_helpers::{resolve_node_id, server_label};
 use crate::identity::{CLIENT_KEY_FILE, load_or_create_secret_key, short_id};
 
 #[derive(Debug, Clone, Copy)]
@@ -51,7 +52,27 @@ fn parse_target(spec: &str) -> Result<FileTarget> {
     Ok(FileTarget { volume: volume.to_string(), target_dir })
 }
 
-async fn ping_server(endpoint: &Endpoint, server_node_id: EndpointId) -> Result<()> {
+/// The server's client allowlist refused this client. Unlike the server being unreachable,
+/// retrying won't help, so it ends the client.
+#[derive(Debug)]
+struct NotAllowed(EndpointId);
+
+impl std::fmt::Display for NotAllowed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "server refused this client: node id {} is not in its allowlist; ask the server operator \
+             to add it with --allow or to their authorized-clients file (`proxy-rs client whoami` prints the full id)",
+            short_id(self.0)
+        )
+    }
+}
+
+impl std::error::Error for NotAllowed {}
+
+/// Pings the server and returns the ping connection, open. Callers hold it for as long as
+/// they run: the server prints `Client connected`/`Client disconnected` as it opens and closes.
+async fn ping_server(endpoint: &Endpoint, server_node_id: EndpointId) -> Result<Connection> {
     const MSG: &str = "ping";
     let conn = endpoint.connect(server_node_id, PING_ALPN_V1).await?;
     let result: Result<()> = async {
@@ -69,20 +90,41 @@ async fn ping_server(endpoint: &Endpoint, server_node_id: EndpointId) -> Result<
         && let Some(ConnectionError::ApplicationClosed(close)) = conn.close_reason()
         && &close.reason[..] == b"not allowed"
     {
-        anyhow::bail!(
-            "server refused this client: node id {} is not in its allowlist; ask the server operator \
-             to add it with --allow or to their authorized-clients file (`proxy-rs client whoami` prints the full id)",
-            short_id(endpoint.id())
-        );
+        return Err(NotAllowed(endpoint.id()).into());
     }
-    result
+    result.map(|()| conn)
+}
+
+/// Keeps a ping connection to the server open for as long as a long-running client runs,
+/// printing when it connects and when the server is lost, and reconnecting until it's back.
+/// Only returns on a fatal error: the server doesn't allow this client.
+async fn maintain_session(endpoint: &Endpoint, server_node_id: EndpointId, server: &str) -> Result<()> {
+    const RETRY: Duration = Duration::from_secs(2);
+    // Print the first failed attempt only, not every retry.
+    let mut waiting = false;
+    loop {
+        match ping_server(endpoint, server_node_id).await {
+            Ok(conn) => {
+                println!("Connected to {server}");
+                let reason = conn.closed().await;
+                println!("Disconnected from {server}{}", close_reason_suffix(&reason));
+                waiting = true;
+            }
+            Err(e) if e.is::<NotAllowed>() => return Err(e),
+            Err(e) if !waiting => {
+                println!("Waiting for {server}: {e:#}");
+                waiting = true;
+            }
+            Err(e) => info!("Still waiting for {server}: {e:#}"),
+        }
+        tokio::time::sleep(RETRY).await;
+    }
 }
 
 pub async fn run_list_volumes(server_node_id_str: Option<String>, name: Option<String>) -> Result<()> {
-    println!("Mode: client volumes");
+    println!("{BANNER} client volumes");
 
-    let (node_name, raw): (String, String) = resolve_node_id(server_node_id_str, name)?;
-    let server_node_id = EndpointId::from_str(&raw).with_context(|| "Could not parse server node id")?;
+    let (node_name, server_node_id) = resolve_node_id(server_node_id_str, name)?;
 
     let endpoint = Arc::new(
         Endpoint::builder(presets::N0)
@@ -97,9 +139,9 @@ pub async fn run_list_volumes(server_node_id_str: Option<String>, name: Option<S
     endpoint.online().await;
 
     let result = async {
-        ping_server(&endpoint, server_node_id).await?;
+        let _session = ping_server(&endpoint, server_node_id).await?;
         let conn = endpoint.connect(server_node_id, LIST_VOLUMES_ALPN_V1).await?;
-        println!("Connected to \"{node_name}\" [{}]", short_id(server_node_id));
+        println!("Connected to {}", server_label(node_name.as_deref(), server_node_id));
 
         let (mut iroh_send, mut iroh_recv) = conn.open_bi().await?;
         ListVolumesRequest { version: 1 }.encode(&mut iroh_send).await?;
@@ -163,9 +205,7 @@ where
 }
 
 pub async fn run_send_file(file_path: String, server_node_id_str: Option<String>, name: Option<String>, target: Option<String>, can_overwrite: bool) -> Result<()> {
-    println!("Mode: client file");
-    println!("Sending: {file_path}");
-    println!("Target: {}", target.as_deref().unwrap_or("(server default volume)"));
+    println!("{BANNER} client file {file_path} -> {}", target.as_deref().unwrap_or("(default volume)"));
 
     let full_path = std::fs::canonicalize(&file_path).with_context(|| format!("Failed to canonicalize path: {file_path}"))?;
     let metadata = tokio::fs::metadata(&full_path).await?;
@@ -185,8 +225,7 @@ pub async fn run_send_file(file_path: String, server_node_id_str: Option<String>
 
     let mut reader = tokio::fs::File::open(&full_path).await?;
 
-    let (node_name, raw): (String, String) = resolve_node_id(server_node_id_str, name)?;
-    let server_node_id = EndpointId::from_str(&raw).with_context(|| "Could not parse server node id")?;
+    let (node_name, server_node_id) = resolve_node_id(server_node_id_str, name)?;
 
     let endpoint = Arc::new(
         Endpoint::builder(presets::N0)
@@ -201,9 +240,9 @@ pub async fn run_send_file(file_path: String, server_node_id_str: Option<String>
     endpoint.online().await;
 
     let result = async {
-        ping_server(&endpoint, server_node_id).await?;
+        let _session = ping_server(&endpoint, server_node_id).await?;
         let conn = endpoint.connect(server_node_id, FILE_ALPN_V1).await?;
-        println!("Connected to \"{node_name}\" [{}]", short_id(server_node_id));
+        println!("Connected to {}", server_label(node_name.as_deref(), server_node_id));
 
         let (mut iroh_send, mut iroh_recv) = conn.open_bi().await?;
         info!("sending file header");
@@ -258,8 +297,7 @@ pub async fn run_sync_rsh(argv: Vec<String>, server_node_id_str: Option<String>,
     let argv: Vec<String> = rest.collect();
     info!("sync-rsh argv: {argv:?}");
 
-    let (node_name, raw): (String, String) = resolve_node_id(server_node_id_str, name)?;
-    let server_node_id = EndpointId::from_str(&raw).with_context(|| "Could not parse server node id")?;
+    let (node_name, server_node_id) = resolve_node_id(server_node_id_str, name)?;
 
     let endpoint = Arc::new(
         Endpoint::builder(presets::N0)
@@ -274,9 +312,9 @@ pub async fn run_sync_rsh(argv: Vec<String>, server_node_id_str: Option<String>,
     endpoint.online().await;
 
     let result = async {
-        ping_server(&endpoint, server_node_id).await?;
+        let _session = ping_server(&endpoint, server_node_id).await?;
         let conn = endpoint.connect(server_node_id, RSYNC_ALPN_V1).await?;
-        info!("Connected to \"{node_name}\" [{}]", short_id(server_node_id));
+        info!("Connected to {}", server_label(node_name.as_deref(), server_node_id));
 
         let (mut iroh_send, mut iroh_recv) = conn.open_bi().await?;
         RsyncHeader { version: 1, argv }.encode(&mut iroh_send).await?;
@@ -296,14 +334,12 @@ pub async fn run_sync_rsh(argv: Vec<String>, server_node_id_str: Option<String>,
 }
 
 pub async fn run_tcp_client(typ: ProxyType, bind_addr: String, tunnel_target: Option<(String, u16)>, server_node_id_str: Option<String>, name: Option<String>) -> Result<()> {
-    println!("Mode: client {}", typ.label());
-    println!("Listening on: {bind_addr}");
-    if let Some((remote_host, remote_port)) = &tunnel_target {
-        println!("Forwarding to: {remote_host}:{remote_port}");
+    match &tunnel_target {
+        Some((remote_host, remote_port)) => println!("{BANNER} client {} {bind_addr} -> {remote_host}:{remote_port}", typ.label()),
+        None => println!("{BANNER} client {} {bind_addr}", typ.label()),
     }
 
-    let (node_name, node_id_raw): (String, String) = resolve_node_id(server_node_id_str, name)?;
-    let server_node_id = EndpointId::from_str(&node_id_raw).with_context(|| "Could not parse server node id")?;
+    let (node_name, server_node_id) = resolve_node_id(server_node_id_str, name)?;
 
     let endpoint = Arc::new(
         Endpoint::builder(presets::N0)
@@ -315,14 +351,16 @@ pub async fn run_tcp_client(typ: ProxyType, bind_addr: String, tunnel_target: Op
     );
     endpoint.online().await;
 
+    let server = server_label(node_name.as_deref(), server_node_id);
     let result = async {
-        ping_server(&endpoint, server_node_id).await?;
-
         info!("Client NodeId: {}", short_id(endpoint.id()));
-        println!("Connected to \"{node_name}\" [{}]", short_id(server_node_id));
 
+        // Listen right away: proxied sockets open their own connections, so they don't wait
+        // on the session, which reconnects in the background whenever the server is lost.
         let listener = TcpListener::bind(&bind_addr).await?;
         info!("Listening for {:?} connections on {bind_addr}", typ);
+        let session = maintain_session(&endpoint, server_node_id, &server);
+        tokio::pin!(session);
 
         loop {
             tokio::select! {
@@ -346,6 +384,7 @@ pub async fn run_tcp_client(typ: ProxyType, bind_addr: String, tunnel_target: Op
                         }
                     });
                 }
+                result = &mut session => return result,
                 _ = tokio::signal::ctrl_c() => {
                     info!("Shutting down client");
                     break;

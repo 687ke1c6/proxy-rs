@@ -5,9 +5,6 @@
 	"dockerComposeFile": "docker-compose.yaml",
 	"service": "dev",
 	"workspaceFolder": "/workspaces/iroh-proxy",
-	"mounts": [
-		"source=${env:HOME}/.ssh,target=/home/rust/.ssh,type=bind,consistency=cached"
-	],
 	"customizations": {
 		"vscode": {
 			"settings": {

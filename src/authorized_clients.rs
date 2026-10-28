@@ -6,24 +6,28 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use tracing::{error, warn};
 
+use crate::id_file;
 use crate::identity::short_id;
 use crate::protocols::ping::alpn::PING_ALPN_V1;
+use crate::stream_helpers::close_reason_suffix;
 
 pub const FILENAME: &str = "authorized-clients";
 
-/// Written to a new `authorized-clients` file; only comments, so it allows no one.
+/// Written to a new `authorized-clients` file; only comments, so on its own (no `--allow`)
+/// it leaves the server open to any client.
 const TEMPLATE: &str = "\
 # Client node ids allowed to connect to this proxy-rs server, one per line.
 # Anything after the id is a label, shown when that client connects.
 # Get a client's id with `proxy-rs client whoami`.
 # This file is re-read on every connection: edit it to add or revoke clients, no restart needed.
+# If it lists no ids and the server has no --allow, ANY client may connect.
 #
 # 7c41d2...9e0b  laptop
 ";
 
 /// Which client node IDs may connect to the server: `--allow` IDs (fixed at startup)
 /// plus the `authorized-clients` file, which is re-read on every connection so clients
-/// can be added or revoked without a restart.
+/// can be added or revoked without a restart. If both are empty, every client is allowed.
 #[derive(Debug)]
 pub struct ClientAllowlist {
     fixed: HashSet<EndpointId>,
@@ -37,22 +41,9 @@ pub enum Access {
     Denied,
 }
 
-/// Parses `authorized-clients`: one node ID per line, optionally followed by whitespace
-/// and a free-form label (e.g. `Dan's PC`). Blank lines and `#` comments are ignored.
+/// Parses `authorized-clients` (see `id_file`): id -> optional label.
 fn parse(content: &str) -> Result<HashMap<EndpointId, Option<String>>> {
-    let mut ids = HashMap::new();
-    for (i, line) in content.lines().enumerate() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let (id, label) = line.split_once(char::is_whitespace).unwrap_or((line, ""));
-        let id = EndpointId::from_str(id)
-            .with_context(|| format!("line {}: invalid node id {id:?}", i + 1))?;
-        let label = label.trim();
-        ids.insert(id, (!label.is_empty()).then(|| label.to_string()));
-    }
-    Ok(ids)
+    Ok(id_file::parse(content)?.into_iter().collect())
 }
 
 impl ClientAllowlist {
@@ -68,12 +59,9 @@ impl ClientAllowlist {
     /// so operators can find it and see the format. Never touches an existing file.
     pub fn create_file_if_missing(&self) -> Result<()> {
         match std::fs::OpenOptions::new().write(true).create_new(true).open(&self.file) {
-            Ok(mut file) => {
-                file.write_all(TEMPLATE.as_bytes())
-                    .with_context(|| format!("failed to write {}", self.file.display()))?;
-                println!("Created {}", self.file.display());
-                Ok(())
-            }
+            Ok(mut file) => file
+                .write_all(TEMPLATE.as_bytes())
+                .with_context(|| format!("failed to write {}", self.file.display())),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
             Err(e) => Err(e).with_context(|| format!("failed to create {}", self.file.display())),
         }
@@ -101,10 +89,12 @@ impl ClientAllowlist {
         &self.file
     }
 
-    /// Re-reads the file, so edits take effect on the next connection. Fails closed: if the
-    /// file can't be read or parsed, only `--allow` IDs get in (without labels).
+    /// Re-reads the file, so edits take effect on the next connection. With no `--allow` IDs
+    /// and no IDs in the file, everyone gets in. Fails closed: if the file can't be read or
+    /// parsed, only `--allow` IDs get in (without labels).
     pub fn check(&self, id: EndpointId) -> Access {
         let file_label = match self.read_file() {
+            Ok(ids) if ids.is_empty() && self.fixed.is_empty() => return Access::Allowed { label: None },
             Ok(mut ids) => ids.remove(&id),
             Err(e) => {
                 error!("{e:#}; denying clients not given via --allow");
@@ -124,10 +114,9 @@ impl ClientAllowlist {
 
 /// Server endpoint hook that admits only allowlisted clients (every ALPN, before the router
 /// hands the connection to a protocol handler) and prints each client session as it starts.
-/// `allowlist: None` (`--allow-any`) admits everyone.
 #[derive(Debug)]
 pub struct ClientGate {
-    pub allowlist: Option<ClientAllowlist>,
+    pub allowlist: ClientAllowlist,
 }
 
 impl EndpointHooks for ClientGate {
@@ -136,24 +125,28 @@ impl EndpointHooks for ClientGate {
             return AfterHandshakeOutcome::Accept;
         }
         let id = conn.remote_id();
-        let label = match &self.allowlist {
-            None => None,
-            Some(list) => match list.check(id) {
-                Access::Allowed { label } => label,
-                // Same close reason as iroh's `AccessLimit`; the client's `ping_server` looks for it.
-                Access::Denied => {
-                    return AfterHandshakeOutcome::Reject { error_code: 0u32.into(), reason: b"not allowed".to_vec() };
-                }
-            },
-        };
-        // Every client operation pings first, so a ping marks a client session starting;
-        // other ALPNs (e.g. one connection per proxied socket) would be too noisy to print.
-        // Printed rather than logged so it's visible at the default (error-only) log level.
-        if conn.alpn() == PING_ALPN_V1 {
-            match label {
-                Some(label) => println!("Client connected: {label} [{}]", short_id(id)),
-                None => println!("Client connected: {}", short_id(id)),
+        let label = match self.allowlist.check(id) {
+            Access::Allowed { label } => label,
+            // Same close reason as iroh's `AccessLimit`; the client's `ping_server` looks for it.
+            Access::Denied => {
+                return AfterHandshakeOutcome::Reject { error_code: 0u32.into(), reason: b"not allowed".to_vec() };
             }
+        };
+        // Every client keeps its ping connection open for as long as it runs (reconnecting if
+        // it drops), so it marks a client session; other ALPNs (e.g. one connection per
+        // proxied socket) would be too noisy to print. Printed rather than logged so it's
+        // visible at the default (error-only) log level.
+        if conn.alpn() == PING_ALPN_V1 {
+            let client = match label {
+                Some(label) => format!("{label} [{}]", short_id(id)),
+                None => short_id(id),
+            };
+            println!("Client connected: {client}");
+            let conn = conn.clone();
+            tokio::spawn(async move {
+                let reason = conn.closed().await.map(|(reason, _)| close_reason_suffix(&reason)).unwrap_or_default();
+                println!("Client disconnected: {client}{reason}");
+            });
         }
         AfterHandshakeOutcome::Accept
     }
@@ -177,8 +170,14 @@ mod tests {
     }
 
     #[test]
-    fn template_allows_no_one() {
+    fn template_lists_no_ids() {
         assert!(parse(TEMPLATE).unwrap().is_empty());
+    }
+
+    #[test]
+    fn no_ids_anywhere_allows_everyone() {
+        let list = ClientAllowlist::new(&[], PathBuf::from("/nonexistent/authorized-clients")).unwrap();
+        assert_eq!(list.check(id()), Access::Allowed { label: None });
     }
 
     #[test]

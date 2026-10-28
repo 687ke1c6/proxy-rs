@@ -42,22 +42,19 @@ We'll start by configuring a server that accepts iroh connections and tunnels th
 On the target ssh server:
 
 ```bash
-proxy-rs server --allow-any --target '*'
+proxy-rs server --target '*'
 ```
 
 ```text
-proxy-rs v0.1.1
-Mode: server
-Features:
-  tcp proxy -> *:*
-WARNING: open proxy enabled (--target '*'): any client with this node id can reach anything this host can, including localhost and the LAN
-WARNING: --allow-any: any client that knows this server's node id can connect
-Iroh node listening [2ee0c38203f21eada4dcc8d744053f5a0952cb7f4833ed16f387f588e0f39977]
+proxy-rs v0.1.2 server tcp=*:* clients=any
+WARNING: open proxy (-t '*'): clients can reach any host, including localhost and the LAN
+WARNING: no allowlist: anyone with this node id can connect (see --allow, /home/user/.proxy-rs/authorized-clients)
+2ee0c38203f21eada4dcc8d744053f5a0952cb7f4833ed16f387f588e0f39977
 ```
 
-Note the two `WARNINGS`: `--allow-any` lets any client connect, and `--target '*'` lets it reach any host and port. That's the simplest setup, not a safe one.
+Note the two `WARNINGS`: with no client allowlist any client can connect, and `--target '*'` lets it reach any host and port. That's the simplest setup, not a safe one.
 
-The ID in brackets is the server's iroh **node ID**.
+The first line sums up the server: version, mode, enabled features (`tcp=<patterns>`, `file`, `rsync`) and how many clients are allowed (`clients=any` means no allowlist). The last line is the server's iroh **node ID**.
 
 ### 2. Connect a client
 
@@ -69,10 +66,7 @@ proxy-rs client tunnel --listen 127.0.0.1:2222 --remote-host localhost --remote-
 ```
 
 ```text
-proxy-rs v0.1.1
-Mode: client tunnel
-Listening on: 127.0.0.1:2222
-Forwarding to: localhost:22
+proxy-rs v0.1.2 client tunnel 127.0.0.1:2222 -> localhost:22
 Connected to "Plucky Narwhal" [2ee0c38203f21eada4dcc8d744053f5a0952cb7f4833ed16f387f588e0f39977]
 ```
 
@@ -100,17 +94,17 @@ Putting it together:
 
 ### Node IDs
 
-The server and each client have their own iroh key pair, created on first run and reused after that, so their node IDs never change. The keys are stored in `~/.proxy-rs/` (or `--config-dir`): `server-key` and `server-key.pub` on the server, `client-key` and `client-key.pub` on the client. `proxy-rs client whoami` prints the client's node ID, which a server needs once you replace `--allow-any` with an allowlist (`--allow`).
+The server and each client have their own iroh key pair, created on first run and reused after that, so their node IDs never change. The keys are stored in `~/.proxy-rs/` (or `--config-dir`): `server-key` and `server-key.pub` on the server, `client-key` and `client-key.pub` on the client. `proxy-rs client whoami` prints the client's node ID, which a server needs once you give it an allowlist (`--allow` or `authorized-clients`).
 
 ### Saved servers
 
-Clients remember the servers they connect to, in `~/.proxy-rs/nodes.yaml`. The first time you use a `--node-id`, the client saves it under a generated name. That's where `"Plucky Narwhal"` in the Quick start came from:
+Clients remember the servers they connect to, in `~/.proxy-rs/known-servers`. It has the same format as `authorized-clients`: one node ID per line, optionally followed by a name, and `#` comments. The first time you use a `--node-id`, the client saves it under a generated name. That's where `"Plucky Narwhal"` in the Quick start came from:
 
-```yaml
-node_entries:
-- name: Plucky Narwhal
-  key: 2ee0c38203f21eada4dcc8d744053f5a0952cb7f4833ed16f387f588e0f39977
+```text
+2ee0c38203f21eada4dcc8d744053f5a0952cb7f4833ed16f387f588e0f39977 Plucky Narwhal
 ```
+
+Edit the file to rename or remove servers, or drop the name entirely.
 
 After that, you can refer to the server by name:
 
@@ -129,9 +123,9 @@ proxy-rs <server|client> ...
 
 ### Server
 
-Whitelist clients by specifying client node id's in `~/proxy-rs/authorized-clients`. Anything after the id on a line is a label (e.g. `3f1eb531...58d Dan Bowers PC`), shown in the server's `Client connected:` output. Or explicitly on the command line `proxy-rs server --allow <client-node-id>`. Or allow any client with `--allow-any` (unsafe).
+Whitelist clients by specifying client node id's in `~/proxy-rs/authorized-clients`. Anything after the id on a line is a label (e.g. `3f1eb531...58d Dan Bowers PC`), shown in the server's `Client connected:` output. Or explicitly on the command line `proxy-rs server --allow <client-node-id>`.
 
-The server refuses to start if no client is allowed and `--allow-any` isn't set.
+If neither lists any client, the server accepts **any** client (unsafe) and prints a WARNING. Adding an id to `authorized-clients` locks it down on the next connection, no restart needed; removing the last id opens it up again.
 
 The `-t --target` flag (repeatable) enables the server to make outbound tcp connections to given targets.
 
@@ -150,8 +144,7 @@ All server arguments:
 | `-f, --file` | `PROXY_RS_SERVER_FILE` | Allow clients to send files into volumes. Needs at least one `-v`. |
 | `-r, --rsync` | `PROXY_RS_SERVER_RSYNC` | Allow rsync pushes into volumes. Needs at least one `-v`, and `rsync` on the server. |
 | `-v, --volume name:path` | — | Declare a directory clients can write into, under `name`. Repeatable. The path must exist. |
-| `--allow <NODE_ID>` | `PROXY_RS_SERVER_ALLOW` (comma-separated) | Allow a client to connect. Repeatable. Merged with the `authorized-clients` file. |
-| `--allow-any` | `PROXY_RS_SERVER_ALLOW_ANY` | Let any client that knows the server's node ID connect. Can't be combined with `--allow`. |
+| `--allow <NODE_ID>` | `PROXY_RS_SERVER_ALLOW` (comma-separated) | Allow a client to connect. Repeatable. Merged with the `authorized-clients` file. If both are empty, any client can connect. |
 
 ### Client
 
@@ -261,7 +254,7 @@ rsync -av -e "proxy-rs client sync-rsh --name 'Brave Otter'" \
 |---|---|---|
 | `-d, --config-dir <DIR>` | `PROXY_RS_CONFIG_DIR` | State directory (default `~/.proxy-rs`). |
 
-You can set almost every flag with an environment variable: `PROXY_RS_CLIENT_LISTEN`, `PROXY_RS_CLIENT_REMOTE_HOST`, `PROXY_RS_CLIENT_REMOTE_PORT`, `PROXY_RS_CLIENT_FILE`, `PROXY_RS_CLIENT_TARGET` and `PROXY_RS_CLIENT_OVERWRITE` on the client, and `PROXY_RS_SERVER_TARGET`, `PROXY_RS_SERVER_FILE`, `PROXY_RS_SERVER_RSYNC`, `PROXY_RS_SERVER_ALLOW` and `PROXY_RS_SERVER_ALLOW_ANY` on the server. A flag on the command line always wins.
+You can set almost every flag with an environment variable: `PROXY_RS_CLIENT_LISTEN`, `PROXY_RS_CLIENT_REMOTE_HOST`, `PROXY_RS_CLIENT_REMOTE_PORT`, `PROXY_RS_CLIENT_FILE`, `PROXY_RS_CLIENT_TARGET` and `PROXY_RS_CLIENT_OVERWRITE` on the client, and `PROXY_RS_SERVER_TARGET`, `PROXY_RS_SERVER_FILE`, `PROXY_RS_SERVER_RSYNC`, and `PROXY_RS_SERVER_ALLOW` on the server. A flag on the command line always wins.
 
 The default log level is `error`. For more detail, use `RUST_LOG`:
 
@@ -274,13 +267,13 @@ RUST_LOG=proxy_rs=debug,iroh=info proxy-rs client socks5 -l 127.0.0.1:1080 -n <i
 
 Read this before exposing a server.
 
-- **Clients are authenticated by their node ID.** iroh proves every client holds the secret key for the node ID it presents, and the server only admits node IDs on its allowlist (`--allow` / `authorized-clients`). The server's node ID alone is not enough to connect.
+- **Clients are authenticated by their node ID.** iroh proves every client holds the secret key for the node ID it presents, and the server only admits node IDs on its allowlist (`--allow` / `authorized-clients`). The server's node ID alone is not enough to connect, **unless the allowlist is empty**, in which case every client is admitted.
 - **Every allowed client can use every enabled feature.**:
   - with `-t`, open TCP connections to any target the patterns allow. With `-t '*'` that is **any host and port the server can reach**, including `127.0.0.1` on the server and its whole LAN;
   - with `-f` or `-r`, list the server's volumes and write files into them.
 - Enable only what you need, and keep `-t` patterns as narrow as you can.
 - `client-key` is a credential: anyone who copies it can connect as that client. To revoke a client, remove it from `authorized-clients` (or drop its `--allow` and restart).
-- Avoid using `--allow-any`, the server's node ID becomes the only credential. Treat it like a password.
+- Avoid running without an allowlist: the server's node ID becomes the only credential. Treat it like a password. Revoking the last id in `authorized-clients` (with no `--allow`) opens the server to everyone.
 - Volume writes are confined to the volume root. `..` segments are rejected, and symlink escapes are caught by canonicalising the path before it is checked.
 - rsync flags are passed through to `rsync --server` as they are, **including `--delete`**. A client can delete files inside a volume.
 - Transport encryption and server authenticity come from iroh. Your client only talks to the holder of that node's secret key.

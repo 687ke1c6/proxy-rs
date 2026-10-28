@@ -36,12 +36,9 @@ pub struct ServerArgs {
     #[arg(short = 'r', long = "rsync", env = "PROXY_RS_SERVER_RSYNC")]
     pub rsync: bool,
     /// client node id allowed to connect, as printed by `client whoami` (repeatable);
-    /// merged with the ids in <config-dir>/authorized-clients
+    /// merged with the ids in <config-dir>/authorized-clients; if both are empty, any client may connect
     #[arg(long = "allow", value_name = "NODE_ID", env = "PROXY_RS_SERVER_ALLOW", value_delimiter = ',')]
     pub allow: Vec<String>,
-    /// let any client that knows this server's node id connect (no client allowlist)
-    #[arg(long = "allow-any", env = "PROXY_RS_SERVER_ALLOW_ANY", conflicts_with = "allow")]
-    pub allow_any: bool,
 }
 
 #[derive(Args)]

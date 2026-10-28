@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::info;
 
+use crate::BANNER;
 use crate::authorized_clients::{self, ClientAllowlist, ClientGate};
 use crate::cli::ServerArgs;
 use crate::identity::{SERVER_KEY_FILE, load_or_create_secret_key};
@@ -41,7 +42,6 @@ fn rsync_on_path() -> bool {
 }
 
 pub async fn run_server(args: ServerArgs) -> Result<()> {
-    println!("Mode: server");
     let policy = Arc::new(TargetPolicy::parse(&args.target)?);
     let volumes = Arc::new(parse_volumes(&args.volumes)?);
 
@@ -58,50 +58,38 @@ pub async fn run_server(args: ServerArgs) -> Result<()> {
         "-f/--file and -r/--rsync need at least one -v/--volume"
     );
 
+    let allowlist = ClientAllowlist::new(&args.allow, config_dir()?.join(authorized_clients::FILENAME))?;
+    allowlist.create_file_if_missing()?;
+    let clients = allowlist.count()?;
+
     // Printed rather than logged: the operator should see exactly what is exposed even at
-    // the default (error-only) log level.
-    println!("Features:");
+    // the default (error-only) log level. One line: version, mode, features, client count.
+    let mut summary = format!("{BANNER} server");
     if !policy.is_empty() {
         let patterns: Vec<String> = policy.patterns().iter().map(ToString::to_string).collect();
-        println!("  tcp proxy -> {}", patterns.join(", "));
+        summary += &format!(" tcp={}", patterns.join(","));
     }
     if args.file {
-        println!("  file send");
+        summary += " file";
     }
     if args.rsync {
-        println!("  rsync push");
+        summary += " rsync";
     }
-    if !volumes.is_empty() {
-        println!("Volumes:");
-        for (name, path) in volumes.iter() {
-            println!("  {name} -> {}", path.display());
-        }
+    match clients {
+        0 => summary += " clients=any",
+        n => summary += &format!(" clients={n}"),
+    }
+    println!("{summary}");
+    let mut volumes_sorted: Vec<_> = volumes.iter().collect();
+    volumes_sorted.sort();
+    for (name, path) in volumes_sorted {
+        println!("  volume {name} -> {}", path.display());
     }
     if policy.is_open() {
-        eprintln!(
-            "WARNING: open proxy enabled (--target '*'): any client with this node id can reach \
-             anything this host can, including localhost and the LAN"
-        );
+        eprintln!("WARNING: open proxy (-t '*'): clients can reach any host, including localhost and the LAN");
     }
-
-    let allowlist = if args.allow_any {
-        None
-    } else {
-        let list = ClientAllowlist::new(&args.allow, config_dir()?.join(authorized_clients::FILENAME))?;
-        list.create_file_if_missing()?;
-        let count = list.count()?;
-        anyhow::ensure!(
-            count > 0,
-            "no clients allowed: pass --allow <node-id> (a client prints its id with `proxy-rs client whoami`), \
-             add ids to {}, or pass --allow-any",
-            list.file().display()
-        );
-        println!("Allowed clients: {count}");
-        Some(list)
-    };
-    if allowlist.is_none() {
-        println!("Allowed clients: any");
-        eprintln!("WARNING: --allow-any: any client that knows this server's node id can connect");
+    if clients == 0 {
+        eprintln!("WARNING: no allowlist: anyone with this node id can connect (see --allow, {})", allowlist.file().display());
     }
     if args.rsync && !rsync_on_path() {
         eprintln!("WARNING: -r/--rsync enabled but rsync was not found on PATH; pushes will fail");
@@ -136,7 +124,7 @@ pub async fn run_server(args: ServerArgs) -> Result<()> {
 
     // Essential output, not a log line: the operator needs this id to give to clients,
     // and it must stay visible at the default (error-only) log level.
-    println!("Iroh node listening [{}]", router.endpoint().id());
+    println!("{}", router.endpoint().id());
 
     tokio::signal::ctrl_c().await?;
     info!("Shutting down server");
