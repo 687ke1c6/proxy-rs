@@ -9,7 +9,7 @@ use tracing::{error, warn};
 use crate::id_file;
 use crate::identity::short_id;
 use crate::protocols::ping::alpn::PING_ALPN_V1;
-use crate::stream_helpers::close_reason_suffix;
+use crate::stream_helpers::{close_reason_suffix, path_kind_suffix, watch_path_kind};
 
 pub const FILENAME: &str = "authorized-clients";
 
@@ -141,10 +141,15 @@ impl EndpointHooks for ClientGate {
                 Some(label) => format!("{label} [{}]", short_id(id)),
                 None => short_id(id),
             };
-            println!("Client connected: {client}");
+            let mut paths = conn.paths();
+            println!("Client connected: {client}{}", path_kind_suffix(&mut paths));
             let conn = conn.clone();
             tokio::spawn(async move {
-                let reason = conn.closed().await.map(|(reason, _)| close_reason_suffix(&reason)).unwrap_or_default();
+                let path_changes = watch_path_kind(paths, |kind| println!("Client {client} now {kind}"));
+                let reason = tokio::select! {
+                    closed = conn.closed() => closed.map(|(reason, _)| close_reason_suffix(&reason)).unwrap_or_default(),
+                    () = path_changes => unreachable!(),
+                };
                 println!("Client disconnected: {client}{reason}");
             });
         }

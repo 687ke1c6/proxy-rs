@@ -8,7 +8,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tracing::{error, info, warn};
 
-use crate::{protocols::{ack::Ack, codec::StreamCodec, file_send::{alpn::FILE_ALPN_V1, file_send_header::FileSendHeader}, list_volumes::{alpn::LIST_VOLUMES_ALPN_V1, list_volumes_header::{ListVolumesRequest, ListVolumesResponse}}, ping::{alpn::PING_ALPN_V1, ping_header::PingHeader}, proxy::{alpn::TCP_PROXY_ALPN_V2, proxy_header::{ACK_CONNECT_FAILED, ACK_NOT_ALLOWED, PROXY_HEADER_VERSION, ProxyHeader}}, rsync::{alpn::RSYNC_ALPN_V1, rsync_header::RsyncHeader}}, stream_helpers::{close_reason_suffix, proxy_process_streams, proxy_streams}};
+use crate::{protocols::{ack::Ack, codec::StreamCodec, file_send::{alpn::FILE_ALPN_V1, file_send_header::FileSendHeader}, list_volumes::{alpn::LIST_VOLUMES_ALPN_V1, list_volumes_header::{ListVolumesRequest, ListVolumesResponse}}, ping::{alpn::PING_ALPN_V1, ping_header::PingHeader}, proxy::{alpn::TCP_PROXY_ALPN_V2, proxy_header::{ACK_CONNECT_FAILED, ACK_NOT_ALLOWED, PROXY_HEADER_VERSION, ProxyHeader}}, rsync::{alpn::RSYNC_ALPN_V1, rsync_header::RsyncHeader}}, stream_helpers::{close_reason_suffix, path_kind_suffix, proxy_process_streams, proxy_streams, watch_path_kind}};
 use crate::BANNER;
 use crate::socks5;
 use crate::http;
@@ -105,8 +105,12 @@ async fn maintain_session(endpoint: &Endpoint, server_node_id: EndpointId, serve
     loop {
         match ping_server(endpoint, server_node_id).await {
             Ok(conn) => {
-                println!("Connected to {server}");
-                let reason = conn.closed().await;
+                let mut paths = conn.paths();
+                println!("Connected to {server}{}", path_kind_suffix(&mut paths));
+                let reason = tokio::select! {
+                    reason = conn.closed() => reason,
+                    () = watch_path_kind(paths, |kind| println!("Connection to {server} now {kind}")) => unreachable!(),
+                };
                 println!("Disconnected from {server}{}", close_reason_suffix(&reason));
                 waiting = true;
             }
@@ -141,7 +145,7 @@ pub async fn run_list_volumes(server_node_id_str: Option<String>, name: Option<S
     let result = async {
         let _session = ping_server(&endpoint, server_node_id).await?;
         let conn = endpoint.connect(server_node_id, LIST_VOLUMES_ALPN_V1).await?;
-        println!("Connected to {}", server_label(node_name.as_deref(), server_node_id));
+        println!("Connected to {}{}", server_label(node_name.as_deref(), server_node_id), path_kind_suffix(&mut conn.paths()));
 
         let (mut iroh_send, mut iroh_recv) = conn.open_bi().await?;
         ListVolumesRequest { version: 1 }.encode(&mut iroh_send).await?;
@@ -242,7 +246,7 @@ pub async fn run_send_file(file_path: String, server_node_id_str: Option<String>
     let result = async {
         let _session = ping_server(&endpoint, server_node_id).await?;
         let conn = endpoint.connect(server_node_id, FILE_ALPN_V1).await?;
-        println!("Connected to {}", server_label(node_name.as_deref(), server_node_id));
+        println!("Connected to {}{}", server_label(node_name.as_deref(), server_node_id), path_kind_suffix(&mut conn.paths()));
 
         let (mut iroh_send, mut iroh_recv) = conn.open_bi().await?;
         info!("sending file header");
