@@ -22,19 +22,13 @@ pub enum Command {
 
 #[derive(Args)]
 pub struct ServerArgs {
-    /// directory clients may write into via --file/--rsync, as name:path (repeatable)
+    /// directory clients may write into (file send and rsync push), as name:path (repeatable)
     #[arg(short = 'v', long = "volume")]
     pub volumes: Vec<String>,
     /// allow TCP proxying (socks5/http/tunnel clients) to targets matching host:port;
     /// host may be `*` or `*.domain`, port may be `*` or `lo-hi`; bare `*` allows everything (repeatable)
     #[arg(short = 't', long = "target", alias = "tunnel", value_name = "PATTERN", env = "PROXY_RS_SERVER_TARGET", value_delimiter = ',')]
     pub target: Vec<String>,
-    /// allow clients to send files into --volume directories
-    #[arg(short = 'f', long = "file", env = "PROXY_RS_SERVER_FILE")]
-    pub file: bool,
-    /// allow rsync pushes into --volume directories (needs rsync installed)
-    #[arg(short = 'r', long = "rsync", env = "PROXY_RS_SERVER_RSYNC")]
-    pub rsync: bool,
     /// client node id allowed to connect, as printed by `client whoami` (repeatable);
     /// merged with the ids in <config-dir>/authorized-clients; if both are empty, any client may connect
     #[arg(long = "allow", value_name = "NODE_ID", env = "PROXY_RS_SERVER_ALLOW", value_delimiter = ',')]

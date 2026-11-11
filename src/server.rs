@@ -46,16 +46,8 @@ pub async fn run_server(args: ServerArgs) -> Result<()> {
     let volumes = Arc::new(parse_volumes(&args.volumes)?);
 
     anyhow::ensure!(
-        volumes.is_empty() || args.file || args.rsync,
-        "--volume given but nothing uses it: add -f/--file and/or -r/--rsync"
-    );
-    anyhow::ensure!(
-        !policy.is_empty() || args.file || args.rsync,
-        "no features enabled: pass at least one of -t/--target, -f/--file, -r/--rsync"
-    );
-    anyhow::ensure!(
-        !volumes.is_empty() || !(args.file || args.rsync),
-        "-f/--file and -r/--rsync need at least one -v/--volume"
+        !policy.is_empty() || !volumes.is_empty(),
+        "no features enabled: pass at least one of -t/--target, -v/--volume"
     );
 
     let allowlist = ClientAllowlist::new(&args.allow, config_dir()?.join(authorized_clients::FILENAME))?;
@@ -69,11 +61,8 @@ pub async fn run_server(args: ServerArgs) -> Result<()> {
         let patterns: Vec<String> = policy.patterns().iter().map(ToString::to_string).collect();
         summary += &format!(" tcp={}", patterns.join(","));
     }
-    if args.file {
-        summary += " file";
-    }
-    if args.rsync {
-        summary += " rsync";
+    if !volumes.is_empty() {
+        summary += " file rsync";
     }
     match clients {
         0 => summary += " clients=any",
@@ -92,8 +81,8 @@ pub async fn run_server(args: ServerArgs) -> Result<()> {
     if clients == 0 {
         eprintln!("WARNING: no allowlist: anyone with this node id can connect (see --allow, {})", allowlist.file().display());
     }
-    if args.rsync && !rsync_on_path() {
-        eprintln!("WARNING: -r/--rsync enabled but rsync was not found on PATH; pushes will fail");
+    if !volumes.is_empty() && !rsync_on_path() {
+        eprintln!("WARNING: volumes enabled but rsync was not found on PATH; pushes will fail");
     }
 
     let secret_key = load_or_create_secret_key(SERVER_KEY_FILE)?;
@@ -112,14 +101,11 @@ pub async fn run_server(args: ServerArgs) -> Result<()> {
     if !policy.is_empty() {
         router = router.accept(TCP_PROXY_ALPN, ProxyServerProtocol { policy });
     }
-    if args.file {
-        router = router.accept(FILE_ALPN, FileServerProtocol { volumes: volumes.clone() });
-    }
-    if args.rsync {
-        router = router.accept(RSYNC_ALPN, RsyncServerProtocol { volumes: volumes.clone() });
-    }
-    if args.file || args.rsync {
-        router = router.accept(LIST_VOLUMES_ALPN, ListVolumesServerProtocol { volumes });
+    if !volumes.is_empty() {
+        router = router
+            .accept(FILE_ALPN, FileServerProtocol { volumes: volumes.clone() })
+            .accept(RSYNC_ALPN, RsyncServerProtocol { volumes: volumes.clone() })
+            .accept(LIST_VOLUMES_ALPN, ListVolumesServerProtocol { volumes });
     }
     let router = router.spawn();
 

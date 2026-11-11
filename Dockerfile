@@ -13,7 +13,7 @@ FROM alpine AS runner
 ARG UID=1000
 ARG GID=1000
 
-# rsync: needed by `server -r` and `client sync-rsh`.
+# rsync: needed by `server -v` and `client sync-rsh`.
 RUN apk add --no-cache ca-certificates rsync
 
 RUN addgroup -g ${GID} rust && \

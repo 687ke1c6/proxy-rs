@@ -14,7 +14,7 @@ Clients address the server by its iroh **node ID** rather than an IP address. ir
 ┌──────────────────┐                                   ┌───────────────────┐
 │ browser ─► SOCKS5│    iroh / QUIC (E2E encrypted)    │  proxy-rs server  │ ─► LAN / internet
 │ curl ─► HTTP     │ ════════════════════════════════► │                   │
-│ ssh ─► tunnel    │   hole-punched, or via relay      │  -t … -f -v media │ ─► /media
+│ ssh ─► tunnel    │   hole-punched, or via relay      │  -t … -v media │ ─► /media
 │ rsync / file     │                                   │                   │
 └──────────────────┘                                   └───────────────────┘
       proxy-rs client  ──── dials by node ID ────►  3f9a…c1e2
@@ -133,7 +133,7 @@ The `-t --target` flag (repeatable) enables the server to make outbound tcp conn
 proxy-rs server -t '*'                                      # outbound connections to any target
 proxy-rs server -t localhost:22                             # will only allow connecting to local sshd
 proxy-rs server -t '*.lan:*' -t '10.0.0.5:8000-8100'        # proxy into part of the LAN
-proxy-rs server -f -r -v media:/srv/media -v home:$HOME/in  # file send + rsync to mapped volumes
+proxy-rs server -v media:/srv/media -v home:$HOME/in        # file send + rsync to mapped volumes
 ```
 
 All server arguments:
@@ -141,9 +141,7 @@ All server arguments:
 | Flag | Env var | Description |
 |---|---|---|
 | `-t, --target <PATTERN>` | `PROXY_RS_SERVER_TARGET` (comma-separated) | Allow TCP proxying (SOCKS5, HTTP and tunnel clients) to targets matching `PATTERN`. Repeatable. |
-| `-f, --file` | `PROXY_RS_SERVER_FILE` | Allow clients to send files into volumes. Needs at least one `-v`. |
-| `-r, --rsync` | `PROXY_RS_SERVER_RSYNC` | Allow rsync pushes into volumes. Needs at least one `-v`, and `rsync` on the server. |
-| `-v, --volume name:path` | — | Declare a directory clients can write into, under `name`. Repeatable. The path must exist. |
+| `-v, --volume name:path` | — | Declare a directory clients can write into, under `name`; enables file send, rsync push (needs `rsync` on the server) and volume listing. Repeatable. The path must exist. |
 | `--allow <NODE_ID>` | `PROXY_RS_SERVER_ALLOW` (comma-separated) | Allow a client to connect. Repeatable. Merged with the `authorized-clients` file. If both are empty, any client can connect. |
 
 ### Client
@@ -261,7 +259,7 @@ rsync -av -e "proxy-rs client sync-rsh --name 'Brave Otter'" \
 |---|---|---|
 | `-d, --config-dir <DIR>` | `PROXY_RS_CONFIG_DIR` | State directory (default `~/.proxy-rs`). |
 
-You can set almost every flag with an environment variable: `PROXY_RS_CLIENT_LISTEN`, `PROXY_RS_CLIENT_REMOTE_HOST`, `PROXY_RS_CLIENT_REMOTE_PORT`, `PROXY_RS_CLIENT_FILE`, `PROXY_RS_CLIENT_TARGET`, `PROXY_RS_CLIENT_OVERWRITE` and `PROXY_RS_CLIENT_RETRY` on the client, and `PROXY_RS_SERVER_TARGET`, `PROXY_RS_SERVER_FILE`, `PROXY_RS_SERVER_RSYNC`, and `PROXY_RS_SERVER_ALLOW` on the server. A flag on the command line always wins.
+You can set almost every flag with an environment variable: `PROXY_RS_CLIENT_LISTEN`, `PROXY_RS_CLIENT_REMOTE_HOST`, `PROXY_RS_CLIENT_REMOTE_PORT`, `PROXY_RS_CLIENT_FILE`, `PROXY_RS_CLIENT_TARGET`, `PROXY_RS_CLIENT_OVERWRITE` and `PROXY_RS_CLIENT_RETRY` on the client, and `PROXY_RS_SERVER_TARGET`, and `PROXY_RS_SERVER_ALLOW` on the server. A flag on the command line always wins.
 
 The default log level is `error`. For more detail, use `RUST_LOG`:
 
@@ -277,7 +275,7 @@ Read this before exposing a server.
 - **Clients are authenticated by their node ID.** iroh proves every client holds the secret key for the node ID it presents, and the server only admits node IDs on its allowlist (`--allow` / `authorized-clients`). The server's node ID alone is not enough to connect, **unless the allowlist is empty**, in which case every client is admitted.
 - **Every allowed client can use every enabled feature.**:
   - with `-t`, open TCP connections to any target the patterns allow. With `-t '*'` that is **any host and port the server can reach**, including `127.0.0.1` on the server and its whole LAN;
-  - with `-f` or `-r`, list the server's volumes and write files into them.
+  - with `-v`, list the server's volumes and write files into them.
 - Enable only what you need, and keep `-t` patterns as narrow as you can.
 - `client-key` is a credential: anyone who copies it can connect as that client. To revoke a client, remove it from `authorized-clients` (or drop its `--allow` and restart).
 - Avoid running without an allowlist: the server's node ID becomes the only credential. Treat it like a password. Revoking the last id in `authorized-clients` (with no `--allow`) opens the server to everyone.
