@@ -3,16 +3,19 @@ use std::sync::Arc;
 use std::time::Duration;
 use anyhow::{Context, Result};
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
-use iroh::{Endpoint, EndpointId, address_lookup::{self, PkarrPublisher}, endpoint::{Connection, ConnectionError, RecvStream, SendStream, presets}};
+use iroh::{Endpoint, EndpointId, address_lookup::{self, PkarrPublisher}, endpoint::{ConnectWithOptsError, Connection, ConnectionError, RecvStream, SendStream, TransportErrorCode, presets}};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
-use crate::{protocols::{ack::Ack, codec::StreamCodec, file_send::{alpn::FILE_ALPN_V1, file_send_header::FileSendHeader}, list_volumes::{alpn::LIST_VOLUMES_ALPN_V1, list_volumes_header::{ListVolumesRequest, ListVolumesResponse}}, ping::{alpn::PING_ALPN_V1, ping_header::PingHeader}, proxy::{alpn::TCP_PROXY_ALPN_V2, proxy_header::{ACK_CONNECT_FAILED, ACK_NOT_ALLOWED, PROXY_HEADER_VERSION, ProxyHeader}}, rsync::{alpn::RSYNC_ALPN_V1, rsync_header::RsyncHeader}}, stream_helpers::{close_reason_suffix, path_kind_suffix, proxy_process_streams, proxy_streams, watch_path_kind}};
+use crate::{protocols::{ack::Ack, codec::StreamCodec, file_send::{alpn::FILE_ALPN, file_send_header::FileSendHeader}, list_volumes::{alpn::LIST_VOLUMES_ALPN, list_volumes_header::{ListVolumesRequest, ListVolumesResponse}}, ping::{alpn::PING_ALPN, ping_header::PingHeader}, proxy::{alpn::TCP_PROXY_ALPN, proxy_header::{ACK_CONNECT_FAILED, ACK_NOT_ALLOWED, ProxyHeader}}, rsync::{alpn::RSYNC_ALPN, rsync_header::RsyncHeader}}, stream_helpers::{close_reason_suffix, path_kind_suffix, proxy_process_streams, proxy_streams, watch_path_kind}};
 use crate::BANNER;
+use crate::errors::display_chain;
+use crate::signals::until_signal;
 use crate::socks5;
 use crate::http;
 use crate::client::client_helpers::{resolve_node_id, server_label};
+use crate::client::spinner::Spinner;
 use crate::identity::{CLIENT_KEY_FILE, load_or_create_secret_key, short_id};
 
 #[derive(Debug, Clone, Copy)]
@@ -70,14 +73,46 @@ impl std::fmt::Display for NotAllowed {
 
 impl std::error::Error for NotAllowed {}
 
+/// `Endpoint::connect`, but explains two common failures in one line:
+/// - no address found for the server (its node id isn't published in DNS): it's not online;
+///   iroh's own error lists every failed lookup, over several lines.
+/// - the server refusing `alpn` (TLS alert 120, "no application protocol"): protocol versions
+///   live only in ALPN strings, so this is what a client/server version mismatch looks like,
+///   as well as a server feature that's off.
+async fn connect(endpoint: &Endpoint, server_node_id: EndpointId, alpn: &[u8]) -> Result<Connection> {
+    endpoint.connect(server_node_id, alpn).await.map_err(|e| {
+        let mut chain = std::iter::successors(Some(&e as &(dyn std::error::Error + 'static)), |e| e.source());
+        if chain.clone().any(|e| matches!(e.downcast_ref::<ConnectWithOptsError>(), Some(ConnectWithOptsError::NoAddress { .. }))) {
+            debug!("Address lookup for {server_node_id} failed: {e:#}");
+            return anyhow::anyhow!("server [{}] is not online (no address found for its node id)", short_id(server_node_id));
+        }
+        let refused_alpn = chain
+            .any(|e| matches!(
+                e.downcast_ref::<ConnectionError>(),
+                Some(ConnectionError::ConnectionClosed(close)) if close.error_code == TransportErrorCode::crypto(120)
+            ));
+        if !refused_alpn {
+            return e.into();
+        }
+        let alpn = String::from_utf8_lossy(alpn);
+        let hint = if alpn.starts_with("proxy-rs/ping/") {
+            // Ping is always enabled, so this can only be a version mismatch.
+            "the server runs an incompatible proxy-rs version; upgrade the older side".to_string()
+        } else {
+            "the feature is not enabled on the server, or it runs an incompatible proxy-rs version".to_string()
+        };
+        anyhow::anyhow!("server does not accept protocol {alpn}: {hint}")
+    })
+}
+
 /// Pings the server and returns the ping connection, open. Callers hold it for as long as
 /// they run: the server prints `Client connected`/`Client disconnected` as it opens and closes.
 async fn ping_server(endpoint: &Endpoint, server_node_id: EndpointId) -> Result<Connection> {
     const MSG: &str = "ping";
-    let conn = endpoint.connect(server_node_id, PING_ALPN_V1).await?;
+    let conn = connect(endpoint, server_node_id, PING_ALPN).await?;
     let result: Result<()> = async {
         let (mut send, mut recv) = conn.open_bi().await.with_context(||"Could not get bi_directional channel")?;
-        PingHeader { version: 1, msg: MSG.to_string() }.encode(&mut send).await?;
+        PingHeader { msg: MSG.to_string() }.encode(&mut send).await?;
         send.finish()?;
         let pong = PingHeader::decode(&mut recv).await.with_context(||"Couldn't receive ping header")?;
         anyhow::ensure!(pong.msg == MSG, "ping/pong message mismatch: got {:?}", pong.msg);
@@ -98,28 +133,55 @@ async fn ping_server(endpoint: &Endpoint, server_node_id: EndpointId) -> Result<
 /// Keeps a ping connection to the server open for as long as a long-running client runs,
 /// printing when it connects and when the server is lost, and reconnecting until it's back.
 /// Only returns on a fatal error: the server doesn't allow this client.
-async fn maintain_session(endpoint: &Endpoint, server_node_id: EndpointId, server: &str) -> Result<()> {
+///
+/// `session` is an already-open ping connection to start with (else it pings first). Without
+/// `retry`, any failure ends it with an error, ncat-style: a failed ping, or the session closing
+/// (`Disconnected from ...`). With `retry` it only returns on `NotAllowed`.
+///
+/// `spinner` is the caller's `Connecting to ...` spinner, kept running until connected; while
+/// disconnected (with `retry`) a `Reconnecting to ...` one runs, with `Waiting for` printed above it.
+async fn maintain_session(endpoint: &Endpoint, server_node_id: EndpointId, server: &str, retry: bool, mut session: Option<Connection>, spinner: Spinner) -> Result<()> {
+    let mut spinner = Some(spinner);
     const RETRY: Duration = Duration::from_secs(2);
     // Print the first failed attempt only, not every retry.
     let mut waiting = false;
     loop {
-        match ping_server(endpoint, server_node_id).await {
+        let attempt = match session.take() {
+            Some(conn) => Ok(conn),
+            None => ping_server(endpoint, server_node_id).await,
+        };
+        match attempt {
             Ok(conn) => {
+                if let Some(spinner) = spinner.take() {
+                    spinner.finish();
+                }
                 let mut paths = conn.paths();
                 println!("Connected to {server}{}", path_kind_suffix(&mut paths));
                 let reason = tokio::select! {
                     reason = conn.closed() => reason,
                     () = watch_path_kind(paths, |kind| println!("Connection to {server} now {kind}")) => unreachable!(),
                 };
-                println!("Disconnected from {server}{}", close_reason_suffix(&reason));
-                waiting = true;
+                let disconnected = format!("Disconnected from {server}{}", close_reason_suffix(&reason));
+                if !retry {
+                    anyhow::bail!(disconnected);
+                }
+                println!("{disconnected}");
+                // Failed attempts after this print `Waiting for` once, then just spin.
+                spinner = Some(Spinner::start(format!("Reconnecting to {server}")));
+                waiting = false;
             }
-            Err(e) if e.is::<NotAllowed>() => return Err(e),
+            Err(e) if e.is::<NotAllowed>() || !retry => return Err(e),
             Err(e) if !waiting => {
-                println!("Waiting for {server}: {e:#}");
+                let line = format!("Waiting for {server}: {}", display_chain(&e));
+                // The spinner keeps saying `Connecting to`/`Reconnecting to`: that's still what
+                // it's doing; this line above it says why it's taking a while.
+                match &spinner {
+                    Some(spinner) => spinner.println(line),
+                    None => println!("{line}"),
+                }
                 waiting = true;
             }
-            Err(e) => info!("Still waiting for {server}: {e:#}"),
+            Err(e) => info!("Still waiting for {server}: {}", display_chain(&e)),
         }
         tokio::time::sleep(RETRY).await;
     }
@@ -129,6 +191,7 @@ pub async fn run_list_volumes(server_node_id_str: Option<String>, name: Option<S
     println!("{BANNER} client volumes");
 
     let (node_name, server_node_id) = resolve_node_id(server_node_id_str, name)?;
+    let spinner = Spinner::start(format!("Connecting to {}", server_label(node_name.as_deref(), server_node_id)));
 
     let endpoint = Arc::new(
         Endpoint::builder(presets::N0)
@@ -139,16 +202,16 @@ pub async fn run_list_volumes(server_node_id_str: Option<String>, name: Option<S
             .await?
     );
 
-    info!("creating endpoint");
-    endpoint.online().await;
-
-    let result = async {
+    // Getting online is inside `until_signal` too, so Ctrl-C while it waits is reported.
+    let result = until_signal(async {
+        endpoint.online().await;
         let _session = ping_server(&endpoint, server_node_id).await?;
-        let conn = endpoint.connect(server_node_id, LIST_VOLUMES_ALPN_V1).await?;
+        let conn = connect(&endpoint, server_node_id, LIST_VOLUMES_ALPN).await?;
+        spinner.finish();
         println!("Connected to {}{}", server_label(node_name.as_deref(), server_node_id), path_kind_suffix(&mut conn.paths()));
 
         let (mut iroh_send, mut iroh_recv) = conn.open_bi().await?;
-        ListVolumesRequest { version: 1 }.encode(&mut iroh_send).await?;
+        ListVolumesRequest {}.encode(&mut iroh_send).await?;
         iroh_send.finish()?;
 
         let response = ListVolumesResponse::decode(&mut iroh_recv).await?;
@@ -159,7 +222,7 @@ pub async fn run_list_volumes(server_node_id_str: Option<String>, name: Option<S
             println!("{}:{}", volume.name, volume.path);
         }
         Ok(())
-    }.await;
+    }).await;
 
     info!("shutting down p2p endpoint");
     endpoint.close().await;
@@ -230,6 +293,7 @@ pub async fn run_send_file(file_path: String, server_node_id_str: Option<String>
     let mut reader = tokio::fs::File::open(&full_path).await?;
 
     let (node_name, server_node_id) = resolve_node_id(server_node_id_str, name)?;
+    let spinner = Spinner::start(format!("Connecting to {}", server_label(node_name.as_deref(), server_node_id)));
 
     let endpoint = Arc::new(
         Endpoint::builder(presets::N0)
@@ -240,18 +304,18 @@ pub async fn run_send_file(file_path: String, server_node_id_str: Option<String>
             .await?
     );
 
-    info!("creating endpoint");
-    endpoint.online().await;
-
-    let result = async {
+    // Getting online is inside `until_signal` too, so Ctrl-C while it waits is reported.
+    let result = until_signal(async {
+        endpoint.online().await;
         let _session = ping_server(&endpoint, server_node_id).await?;
-        let conn = endpoint.connect(server_node_id, FILE_ALPN_V1).await?;
+        let conn = connect(&endpoint, server_node_id, FILE_ALPN).await?;
+        spinner.finish();
         println!("Connected to {}{}", server_label(node_name.as_deref(), server_node_id), path_kind_suffix(&mut conn.paths()));
 
         let (mut iroh_send, mut iroh_recv) = conn.open_bi().await?;
         info!("sending file header");
 
-        let file_send_header = FileSendHeader { file_name, file_size, version: 2, volume, target_dir, can_overwrite };
+        let file_send_header = FileSendHeader { file_name, file_size, volume, target_dir, can_overwrite };
         file_send_header.encode(&mut iroh_send).await?;
         info!("sent file header, waiting for ack");
 
@@ -269,7 +333,7 @@ pub async fn run_send_file(file_path: String, server_node_id_str: Option<String>
             anyhow::bail!("Server responded with error ack: {:?}", file_send_ack.msg);
         }
         Ok(())
-    }.await;
+    }).await;
 
     info!("shutting down p2p endpoint");
     endpoint.close().await;
@@ -302,6 +366,7 @@ pub async fn run_sync_rsh(argv: Vec<String>, server_node_id_str: Option<String>,
     info!("sync-rsh argv: {argv:?}");
 
     let (node_name, server_node_id) = resolve_node_id(server_node_id_str, name)?;
+    info!("Connecting to {}...", server_label(node_name.as_deref(), server_node_id));
 
     let endpoint = Arc::new(
         Endpoint::builder(presets::N0)
@@ -317,11 +382,11 @@ pub async fn run_sync_rsh(argv: Vec<String>, server_node_id_str: Option<String>,
 
     let result = async {
         let _session = ping_server(&endpoint, server_node_id).await?;
-        let conn = endpoint.connect(server_node_id, RSYNC_ALPN_V1).await?;
+        let conn = connect(&endpoint, server_node_id, RSYNC_ALPN).await?;
         info!("Connected to {}", server_label(node_name.as_deref(), server_node_id));
 
         let (mut iroh_send, mut iroh_recv) = conn.open_bi().await?;
-        RsyncHeader { version: 1, argv }.encode(&mut iroh_send).await?;
+        RsyncHeader { argv }.encode(&mut iroh_send).await?;
 
         let ack = Ack::decode(&mut iroh_recv).await?;
         if ack.ack != 0 {
@@ -337,13 +402,17 @@ pub async fn run_sync_rsh(argv: Vec<String>, server_node_id_str: Option<String>,
     result
 }
 
-pub async fn run_tcp_client(typ: ProxyType, bind_addr: String, tunnel_target: Option<(String, u16)>, server_node_id_str: Option<String>, name: Option<String>) -> Result<()> {
+pub async fn run_tcp_client(typ: ProxyType, bind_addr: String, tunnel_target: Option<(String, u16)>, server_node_id_str: Option<String>, name: Option<String>, retry: bool) -> Result<()> {
+    let retry_flag = if retry { " retry" } else { "" };
     match &tunnel_target {
-        Some((remote_host, remote_port)) => println!("{BANNER} client {} {bind_addr} -> {remote_host}:{remote_port}", typ.label()),
-        None => println!("{BANNER} client {} {bind_addr}", typ.label()),
+        Some((remote_host, remote_port)) => println!("{BANNER} client {} {bind_addr} -> {remote_host}:{remote_port}{retry_flag}", typ.label()),
+        None => println!("{BANNER} client {} {bind_addr}{retry_flag}", typ.label()),
     }
 
     let (node_name, server_node_id) = resolve_node_id(server_node_id_str, name)?;
+    let server = server_label(node_name.as_deref(), server_node_id);
+    // Started before the endpoint comes up: getting online is part of the wait.
+    let spinner = Spinner::start(format!("Connecting to {server}"));
 
     let endpoint = Arc::new(
         Endpoint::builder(presets::N0)
@@ -353,17 +422,19 @@ pub async fn run_tcp_client(typ: ProxyType, bind_addr: String, tunnel_target: Op
             .bind()
             .await?,
     );
-    endpoint.online().await;
-
-    let server = server_label(node_name.as_deref(), server_node_id);
-    let result = async {
+    // Getting online is inside `until_signal` too, so Ctrl-C while it waits is reported.
+    // A signal ends the loop below (and drops the session, clearing its spinner).
+    let result = until_signal(async {
+        endpoint.online().await;
         info!("Client NodeId: {}", short_id(endpoint.id()));
 
-        // Listen right away: proxied sockets open their own connections, so they don't wait
-        // on the session, which reconnects in the background whenever the server is lost.
+        // Without --retry, the server must be there before we listen (and we exit when it goes).
+        // With it, listen right away: proxied sockets open their own connections, so they don't
+        // wait on the session, which reconnects in the background whenever the server is lost.
+        let first_session = if retry { None } else { Some(ping_server(&endpoint, server_node_id).await?) };
         let listener = TcpListener::bind(&bind_addr).await?;
         info!("Listening for {:?} connections on {bind_addr}", typ);
-        let session = maintain_session(&endpoint, server_node_id, &server);
+        let session = maintain_session(&endpoint, server_node_id, &server, retry, first_session, spinner);
         tokio::pin!(session);
 
         loop {
@@ -384,19 +455,14 @@ pub async fn run_tcp_client(typ: ProxyType, bind_addr: String, tunnel_target: Op
                             }
                         };
                         if let Err(e) = result {
-                            error!("Proxy error from {peer_addr}: {e:#}");
+                            error!("Proxy error from {peer_addr}: {}", display_chain(&e));
                         }
                     });
                 }
                 result = &mut session => return result,
-                _ = tokio::signal::ctrl_c() => {
-                    info!("Shutting down client");
-                    break;
-                }
             }
         }
-        Ok(())
-    }.await;
+    }).await;
 
     endpoint.close().await;
     result
@@ -410,14 +476,14 @@ enum ProxyOpen {
     Refused(Ack),
 }
 
-/// Opens a `proxy-rs/tcp/2` stream to `host:port` via the server and waits for its verdict.
+/// Opens a `proxy-rs/tcp/3` stream to `host:port` via the server and waits for its verdict.
 /// `Err` means the server itself couldn't be reached or broke protocol.
 async fn open_proxy_stream(endpoint: &Endpoint, server_node_id: EndpointId, host: &str, port: u16) -> Result<ProxyOpen> {
     info!("Connecting to iroh server {}", short_id(server_node_id));
-    let conn = endpoint.connect(server_node_id, TCP_PROXY_ALPN_V2).await?;
+    let conn = connect(endpoint, server_node_id, TCP_PROXY_ALPN).await?;
     let (mut iroh_send, mut iroh_recv) = conn.open_bi().await?;
 
-    let proxy_header = ProxyHeader { version: PROXY_HEADER_VERSION, host: host.to_string(), port };
+    let proxy_header = ProxyHeader { host: host.to_string(), port };
     proxy_header.encode(&mut iroh_send).await?;
 
     let ack = Ack::decode(&mut iroh_recv).await?;

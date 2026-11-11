@@ -14,14 +14,14 @@ use crate::stream_helpers::proxy_process_streams;
 use crate::identity::short_id;
 
 #[derive(Debug, Clone)]
-pub struct RsyncServerProtocolV1 {
+pub struct RsyncServerProtocol {
     /// name -> canonicalized root directory, configured via `-v`/`--volume`. Same map
-    /// `FileServerProtocolV1` uses — one allowlist shared by every protocol that
+    /// `FileServerProtocol` uses — one allowlist shared by every protocol that
     /// writes into the filesystem on the client's behalf.
     pub volumes: Arc<HashMap<String, PathBuf>>,
 }
 
-impl ProtocolHandler for RsyncServerProtocolV1 {
+impl ProtocolHandler for RsyncServerProtocol {
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
         self.handle(connection).await
             .map_err(|e| AcceptError::from_boxed(e.into()))
@@ -36,7 +36,7 @@ async fn finish_and_close(send: &mut SendStream, connection: &Connection) -> any
     Ok(())
 }
 
-impl RsyncServerProtocolV1 {
+impl RsyncServerProtocol {
     /// Validates `argv` (as `sync-rsh` forwarded it) and resolves the client's
     /// destination-path token into a safe, volume-confined directory.
     ///
@@ -69,12 +69,6 @@ impl RsyncServerProtocolV1 {
         let (mut iroh_send, mut iroh_recv) = connection.accept_bi().await?;
 
         let header = RsyncHeader::decode(&mut iroh_recv).await?;
-        if header.version != 1 {
-            error!("Bad rsync header version");
-            Ack::no_ack(1, Some("unsupported rsync protocol version".to_string())).encode(&mut iroh_send).await?;
-            finish_and_close(&mut iroh_send, &connection).await?;
-            anyhow::bail!("unsupported rsync protocol version: {}", header.version);
-        }
 
         let (passthrough_flags, resolved_dir) = match self.resolve(&header.argv) {
             Ok(v) => v,

@@ -1,4 +1,4 @@
-use crate::protocols::codec::StreamCodec;
+use serde::{Deserialize, Serialize};
 
 /// Sent once by `sync-rsh` before the stream becomes a raw byte pipe carrying the
 /// actual rsync protocol. `argv` is everything rsync handed to `sync-rsh` after the
@@ -10,8 +10,7 @@ use crate::protocols::codec::StreamCodec;
 /// the configured volumes before spawning anything. Everything before it (the flags)
 /// is passed through to the spawned `rsync --server` verbatim, since flags like
 /// compression or archive-mode aren't filesystem-referencing by themselves.
-#[derive(Debug, StreamCodec)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct RsyncHeader {
-    pub version: u8,
     pub argv: Vec<String>,
 }

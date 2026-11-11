@@ -162,6 +162,13 @@ The client always runs with a subcommand that picks what it does, `proxy-rs clie
 
 Every subcommand except `whoami` connects to a server, chosen by its node ID `-n <server-node-id>` or its saved name `--name <name>`. Generally the name is more convenient.
 
+Like `ncat` or `telnet`, a client exits with an error if the server isn't online, or when it goes away. `socks5`, `http` and `tunnel` take `--retry` to stay up instead: they listen right away, wait for the server, and reconnect whenever it's lost. Use it for clients that should keep running, e.g. as a service:
+
+```bash
+proxy-rs client tunnel --listen 127.0.0.1:2222 \
+  --remote-host 127.0.0.1 --remote-port 22 --name "Brave Otter" --retry
+```
+
 ---
 
 #### `socks5`: local SOCKS5 proxy
@@ -254,7 +261,7 @@ rsync -av -e "proxy-rs client sync-rsh --name 'Brave Otter'" \
 |---|---|---|
 | `-d, --config-dir <DIR>` | `PROXY_RS_CONFIG_DIR` | State directory (default `~/.proxy-rs`). |
 
-You can set almost every flag with an environment variable: `PROXY_RS_CLIENT_LISTEN`, `PROXY_RS_CLIENT_REMOTE_HOST`, `PROXY_RS_CLIENT_REMOTE_PORT`, `PROXY_RS_CLIENT_FILE`, `PROXY_RS_CLIENT_TARGET` and `PROXY_RS_CLIENT_OVERWRITE` on the client, and `PROXY_RS_SERVER_TARGET`, `PROXY_RS_SERVER_FILE`, `PROXY_RS_SERVER_RSYNC`, and `PROXY_RS_SERVER_ALLOW` on the server. A flag on the command line always wins.
+You can set almost every flag with an environment variable: `PROXY_RS_CLIENT_LISTEN`, `PROXY_RS_CLIENT_REMOTE_HOST`, `PROXY_RS_CLIENT_REMOTE_PORT`, `PROXY_RS_CLIENT_FILE`, `PROXY_RS_CLIENT_TARGET`, `PROXY_RS_CLIENT_OVERWRITE` and `PROXY_RS_CLIENT_RETRY` on the client, and `PROXY_RS_SERVER_TARGET`, `PROXY_RS_SERVER_FILE`, `PROXY_RS_SERVER_RSYNC`, and `PROXY_RS_SERVER_ALLOW` on the server. A flag on the command line always wins.
 
 The default log level is `error`. For more detail, use `RUST_LOG`:
 

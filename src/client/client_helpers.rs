@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 
 use anyhow::{Context, Result};
-use dialoguer::{Input, Select};
+use dialoguer::{Confirm, Input, Select};
 use iroh::EndpointId;
 use rand::Rng;
 use tracing::{info, warn};
@@ -80,21 +80,55 @@ fn select_known_server() -> Result<(Option<String>, EndpointId)> {
         .interact()
         .with_context(|| "Failed to get user selection")?;
 
-    match servers.into_iter().nth(selection) {
-        Some(server) => Ok((server.name, server.id)),
-        None => {
-            let id = prompt_node_id()?;
-            let name: String = Input::new()
-                .with_prompt("Name")
-                .default(generate_name())
-                .interact_text()
-                .with_context(|| "Failed to read name")?
-                .trim()
-                .to_string();
-            let name = (!name.is_empty()).then_some(name);
-            append(id, name.as_deref())?;
-            Ok((name, id))
+    match servers.get(selection) {
+        Some(server) => Ok((server.name.clone(), server.id)),
+        None => add_new_server(&servers),
+    }
+}
+
+/// The `<new>` menu entry: prompts for a node id, then a name, and saves them. If a different
+/// saved server already has that name, asks before replacing that entry (names are unique);
+/// answering no asks for another name. If the id is already saved, its line is renamed rather
+/// than duplicated (one name per node id), and its current name is the prompt's default.
+fn add_new_server(servers: &[KnownServer]) -> Result<(Option<String>, EndpointId)> {
+    let id = prompt_node_id()?;
+    let default_name = servers
+        .iter()
+        .find(|s| s.id == id)
+        .and_then(|s| s.name.clone())
+        .unwrap_or_else(generate_name);
+    loop {
+        let name: String = Input::new()
+            .with_prompt("Name")
+            .default(default_name.clone())
+            .interact_text()
+            .with_context(|| "Failed to read name")?
+            .trim()
+            .to_string();
+        let name = (!name.is_empty()).then_some(name);
+
+        let clashes: Vec<EndpointId> = servers
+            .iter()
+            .filter(|s| s.id != id && s.name.is_some() && s.name == name)
+            .map(|s| s.id)
+            .collect();
+        if let (Some(name), false) = (&name, clashes.is_empty()) {
+            let ids: Vec<String> = clashes.iter().map(|&c| format!("[{}]", short_id(c))).collect();
+            let replace = Confirm::new()
+                .with_prompt(format!(
+                    "\"{name}\" is already saved for {}. Replace it with [{}]?",
+                    ids.join(", "),
+                    short_id(id)
+                ))
+                .default(false)
+                .interact()
+                .with_context(|| "Failed to read confirmation")?;
+            if !replace {
+                continue;
+            }
         }
+        save(id, name.as_deref(), &clashes)?;
+        return Ok((name, id));
     }
 }
 
@@ -134,7 +168,7 @@ pub fn resolve_node_id(node_id: Option<String>, name: Option<String>) -> Result<
                 Some(known) if known.name.as_deref() == Some(&name) => {}
                 Some(_) => {
                     info!("Naming saved server [{}] \"{name}\"", short_id(id));
-                    rename(id, &name)?;
+                    save(id, Some(&name), &[])?;
                 }
                 None => append(id, Some(&name))?,
             }
@@ -163,7 +197,8 @@ pub fn resolve_node_id(node_id: Option<String>, name: Option<String>) -> Result<
                 }
                 None => {
                     let id = prompt_node_id()?;
-                    append(id, Some(&name))?;
+                    // `save`, not `append`: the id may already be saved under another name.
+                    save(id, Some(&name), &[])?;
                     Ok((Some(name), id))
                 }
             }
@@ -199,18 +234,73 @@ fn append(id: EndpointId, name: Option<&str>) -> Result<()> {
         .with_context(|| format!("failed to write {}", path.display()))
 }
 
-/// Sets the name on `id`'s line(s) in `known-servers`, leaving every other line
-/// (comments included) as it was.
-fn rename(id: EndpointId, name: &str) -> Result<()> {
+/// Saves `id` as `name` in `known-servers`, removing the entries for `replace` (servers
+/// whose name is being taken over). See `rewrite`.
+fn save(id: EndpointId, name: Option<&str>, replace: &[EndpointId]) -> Result<()> {
     let path = path()?;
+    if !path.exists() {
+        return append(id, name);
+    }
     let content = std::fs::read_to_string(&path).with_context(|| format!("failed to read {}", path.display()))?;
+    info!("Saving server [{}] to {}", short_id(id), path.display());
+    std::fs::write(&path, rewrite(&content, id, name, replace))
+        .with_context(|| format!("failed to write {}", path.display()))
+}
+
+/// `known-servers` content with `id` named `name`: its first line is rewritten in place and
+/// any later duplicates dropped (one name per node id), or a line is appended if it's not
+/// there; lines for `replace` ids are dropped. Every other line, comments included, is kept.
+fn rewrite(content: &str, id: EndpointId, name: Option<&str>, replace: &[EndpointId]) -> String {
     let mut out = String::with_capacity(content.len());
+    let mut found = false;
     for line in content.lines() {
         match id_file::parse_line(line) {
-            Ok(Some((line_id, _))) if line_id == id => out += &id_file::format_line(id, Some(name)),
+            Ok(Some((line_id, _))) if line_id == id && found => continue,
+            Ok(Some((line_id, _))) if line_id == id => {
+                found = true;
+                out += &id_file::format_line(id, name);
+            }
+            Ok(Some((line_id, _))) if replace.contains(&line_id) => continue,
             _ => out += line,
         }
         out.push('\n');
     }
-    std::fs::write(&path, out).with_context(|| format!("failed to write {}", path.display()))
+    if !found {
+        out += &id_file::format_line(id, name);
+        out.push('\n');
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ids() -> (EndpointId, EndpointId, EndpointId) {
+        let id = |n: u8| iroh::SecretKey::from_bytes(&[n; 32]).public();
+        (id(1), id(2), id(3))
+    }
+
+    #[test]
+    fn renames_existing_id_in_place_and_drops_duplicates() {
+        let (a, b, _) = ids();
+        let content = format!("# header\n{a} Old\n{b} Other\n{a} Dup\n");
+        let out = rewrite(&content, a, Some("New Name"), &[]);
+        assert_eq!(out, format!("# header\n{a} New Name\n{b} Other\n"));
+    }
+
+    #[test]
+    fn appends_unknown_id() {
+        let (a, b, _) = ids();
+        let out = rewrite(&format!("{a} One\n"), b, Some("Two"), &[]);
+        assert_eq!(out, format!("{a} One\n{b} Two\n"));
+    }
+
+    #[test]
+    fn replaces_servers_whose_name_is_taken_over() {
+        let (a, b, c) = ids();
+        let content = format!("{a} Home\n# keep me\n{b} Work\n");
+        let out = rewrite(&content, c, Some("Home"), &[a]);
+        assert_eq!(out, format!("# keep me\n{b} Work\n{c} Home\n"));
+    }
 }

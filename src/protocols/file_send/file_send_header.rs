@@ -1,8 +1,7 @@
-use crate::protocols::codec::StreamCodec;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, StreamCodec)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct FileSendHeader {
-    pub version: u8,
     pub file_name: String,
     pub file_size: u64,
     /// Server-side volume name (see `-v`/`--volume`); empty means "let the server pick a
@@ -11,6 +10,5 @@ pub struct FileSendHeader {
     /// Destination directory within the volume, `/`-separated, relative, no `..`; empty
     /// means the volume root.
     pub target_dir: String,
-    #[codec(bitpack)]
     pub can_overwrite: bool,
 }

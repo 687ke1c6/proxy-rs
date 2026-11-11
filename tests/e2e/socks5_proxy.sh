@@ -6,6 +6,7 @@
 # outside that allowlist must be refused with SOCKS5 reply 0x02 ("not allowed").
 # The server only admits the test client's node id (--allow), so a client with a
 # different key (its own --config-dir) must be refused at its startup ping.
+# Finally the server is stopped, and the client (no --retry) must exit with an error.
 #
 # Usage:
 #   bash tests/e2e/socks5_proxy.sh
@@ -154,3 +155,32 @@ if [[ "$STRANGER_EXIT" -eq 0 || "$STRANGER_EXIT" -eq 124 || "$STRANGER_OUT" != *
 fi
 
 echo "OK: unlisted client was refused"
+
+# Without --retry the client behaves like ncat: when the server goes away, it exits
+# with an error. SIGINT is the server's clean shutdown, so the client hears about it
+# at once instead of after QUIC's ~30s idle timeout.
+echo "== stopping the server: the client (no --retry) must exit with an error =="
+kill -INT "$SERVER_PID"
+wait "$SERVER_PID" 2>/dev/null || true
+SERVER_PID=""
+CLIENT_EXIT=""
+for _ in $(seq 1 50); do
+    if ! kill -0 "$CLIENT_PID" 2>/dev/null; then
+        wait "$CLIENT_PID" && CLIENT_EXIT=0 || CLIENT_EXIT=$?
+        break
+    fi
+    sleep 0.2
+done
+if [[ -z "$CLIENT_EXIT" ]]; then
+    echo "client still running 10s after the server stopped:" >&2
+    cat client.log >&2
+    exit 1
+fi
+CLIENT_PID=""
+if [[ "$CLIENT_EXIT" -eq 0 ]] || ! grep -q "Disconnected from" client.log; then
+    echo "expected the client to exit non-zero with 'Disconnected from', got exit $CLIENT_EXIT:" >&2
+    cat client.log >&2
+    exit 1
+fi
+
+echo "OK: client exited (code $CLIENT_EXIT) when the server stopped"

@@ -1,18 +1,16 @@
-use crate::protocols::codec::StreamCodec;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, StreamCodec)]
-pub struct ListVolumesRequest {
-    pub version: u8,
-}
+/// Empty for now; still sent so the client's request is an explicit message.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ListVolumesRequest {}
 
-#[derive(Debug, StreamCodec)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct VolumeEntry {
     pub name: String,
     pub path: String,
 }
 
-#[derive(Debug, StreamCodec)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ListVolumesResponse {
-    pub version: u8,
     pub volumes: Vec<VolumeEntry>,
 }

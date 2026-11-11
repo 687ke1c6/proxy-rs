@@ -11,12 +11,12 @@ use crate::protocols::{ack::Ack, file_send::file_send_header::FileSendHeader, vo
 use crate::identity::short_id;
 
 #[derive(Debug, Clone)]
-pub struct FileServerProtocolV1 {
+pub struct FileServerProtocol {
     /// name -> canonicalized root directory, configured via `-v`/`--volume`.
     pub volumes: Arc<HashMap<String, PathBuf>>,
 }
 
-impl ProtocolHandler for FileServerProtocolV1 {
+impl ProtocolHandler for FileServerProtocol {
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
         self.handle(connection).await
             .map_err(|e| AcceptError::from_boxed(e.into()))
@@ -39,7 +39,7 @@ fn safe_join(root: &Path, target_dir: &str, file_name: &str) -> Result<PathBuf, 
 /// Without this, the `Router` tears the connection down as soon as `handle()` returns,
 /// racing whatever was just written — the client can see "closed by peer" while decoding
 /// an ack even though every byte the server wrote was already correct and flushed to
-/// disk. Mirrors what `PingServerProtocolV1` already does after sending its pong.
+/// disk. Mirrors what `PingServerProtocol` already does after sending its pong.
 async fn finish_and_close(send: &mut SendStream, connection: &Connection) -> anyhow::Result<()> {
     send.finish()?;
     connection.closed().await;
@@ -72,20 +72,13 @@ fn resolve_destination(volumes: &HashMap<String, PathBuf>, header: &FileSendHead
     }
 }
 
-impl FileServerProtocolV1 {
+impl FileServerProtocol {
     async fn handle(&self, connection: Connection) -> anyhow::Result<()> {
         info!("Accepted file_send connection from {}", short_id(connection.remote_id()));
         let alpn_string = String::from_utf8(connection.alpn().to_vec())?;
         let (mut iroh_send, mut iroh_recv) = connection.accept_bi().await?;
 
         let file_send_header = FileSendHeader::decode(&mut iroh_recv).await?;
-
-        if file_send_header.version != 2 {
-            error!("Bad file send header version");
-            Ack::no_ack(1, Some("unsupported file_send protocol version".to_string())).encode(&mut iroh_send).await?;
-            finish_and_close(&mut iroh_send, &connection).await?;
-            anyhow::bail!("unsupported file_send protocol version: {}", file_send_header.version);
-        }
 
         let file_path = match resolve_destination(&self.volumes, &file_send_header) {
             Ok(path) => path,

@@ -78,6 +78,10 @@ pub struct Socks5Args {
     /// local address to listen on, e.g. 127.0.0.1:1080
     #[arg(short, long, env = "PROXY_RS_CLIENT_LISTEN")]
     pub listen: String,
+    /// keep running if the server is unreachable or lost: wait for it at startup and
+    /// reconnect whenever it goes away (default: exit with an error, like ncat)
+    #[arg(long, env = "PROXY_RS_CLIENT_RETRY")]
+    pub retry: bool,
 }
 
 #[derive(Args)]
@@ -85,6 +89,10 @@ pub struct HttpArgs {
     /// local address to listen on, e.g. 127.0.0.1:8080
     #[arg(short, long, env = "PROXY_RS_CLIENT_LISTEN")]
     pub listen: String,
+    /// keep running if the server is unreachable or lost: wait for it at startup and
+    /// reconnect whenever it goes away (default: exit with an error, like ncat)
+    #[arg(long, env = "PROXY_RS_CLIENT_RETRY")]
+    pub retry: bool,
 }
 
 #[derive(Args)]
@@ -98,6 +106,10 @@ pub struct TunnelArgs {
     /// fixed remote port to forward every connection to
     #[arg(long, env = "PROXY_RS_CLIENT_REMOTE_PORT")]
     pub remote_port: u16,
+    /// keep running if the server is unreachable or lost: wait for it at startup and
+    /// reconnect whenever it goes away (default: exit with an error, like ncat)
+    #[arg(long, env = "PROXY_RS_CLIENT_RETRY")]
+    pub retry: bool,
 }
 
 #[derive(Args)]

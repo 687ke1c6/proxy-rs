@@ -5,11 +5,13 @@ mod cli;
 mod client;
 mod authorized_clients;
 mod config_dir;
+mod errors;
 mod http;
 mod id_file;
 mod identity;
 mod protocols;
 mod server;
+mod signals;
 mod socks5;
 mod stream_helpers;
 
@@ -52,20 +54,20 @@ async fn main() -> Result<()> {
     match cli.command {
         Command::Server(args) => server::run_server(args).await,
         Command::Client(ClientArgs { node_id, name, mode }) => match mode {
-            ClientMode::Socks5(Socks5Args { listen }) => {
-                run_tcp_client(ProxyType::Socks5, listen, None, node_id, name).await.or_else(|e: anyhow::Error| anyhow::bail!("Failed to run SOCKS5 client: {e:#}"))
+            ClientMode::Socks5(Socks5Args { listen, retry }) => {
+                run_tcp_client(ProxyType::Socks5, listen, None, node_id, name, retry).await.map_err(|e| failed("Failed to run SOCKS5 client", e))
             }
-            ClientMode::Http(HttpArgs { listen }) => {
-                run_tcp_client(ProxyType::Http, listen, None, node_id, name).await.or_else(|e: anyhow::Error| anyhow::bail!("Failed to run HTTP client: {e:#}"))
+            ClientMode::Http(HttpArgs { listen, retry }) => {
+                run_tcp_client(ProxyType::Http, listen, None, node_id, name, retry).await.map_err(|e| failed("Failed to run HTTP client", e))
             }
-            ClientMode::Tunnel(TunnelArgs { listen, remote_host, remote_port }) => {
-                run_tcp_client(ProxyType::Tunnel, listen, Some((remote_host, remote_port)), node_id, name).await.or_else(|e: anyhow::Error| anyhow::bail!("Failed to run tunnel client: {e:#}"))
+            ClientMode::Tunnel(TunnelArgs { listen, remote_host, remote_port, retry }) => {
+                run_tcp_client(ProxyType::Tunnel, listen, Some((remote_host, remote_port)), node_id, name, retry).await.map_err(|e| failed("Failed to run tunnel client", e))
             }
             ClientMode::File(FileArgs { file, overwrite, target }) => {
-                run_send_file(file, node_id, name, target, overwrite).await.or_else(|e: anyhow::Error| anyhow::bail!("Failed to run file send: {e:#}"))
+                run_send_file(file, node_id, name, target, overwrite).await.map_err(|e| failed("Failed to run file send", e))
             }
             ClientMode::Volumes(VolumesArgs {}) => {
-                run_list_volumes(node_id, name).await.or_else(|e: anyhow::Error| anyhow::bail!("Failed to list volumes: {e:#}"))
+                run_list_volumes(node_id, name).await.map_err(|e| failed("Failed to list volumes", e))
             }
             ClientMode::Whoami(WhoamiArgs {}) => {
                 println!("{}", identity::load_or_create_secret_key(identity::CLIENT_KEY_FILE)?.public());
@@ -79,7 +81,7 @@ async fn main() -> Result<()> {
                 let code = match result {
                     Ok(()) => 0,
                     Err(e) => {
-                        eprintln!("sync-rsh failed: {e:#}");
+                        eprintln!("sync-rsh failed: {}", errors::display_chain(&e));
                         1
                     }
                 };
@@ -87,4 +89,14 @@ async fn main() -> Result<()> {
             }
         },
     }
+}
+
+/// The error for a failed client mode: `<what>: <cause chain>`. A client stopped by a signal
+/// has already said so (`signals::until_signal`) and closed its connection, so it exits
+/// quietly with the signal's code instead of printing an `Error:` line.
+fn failed(what: &str, e: anyhow::Error) -> anyhow::Error {
+    if let Some(signals::Interrupted(signal)) = e.downcast_ref() {
+        std::process::exit(signal.exit_code());
+    }
+    anyhow::anyhow!("{what}: {}", errors::display_chain(&e))
 }

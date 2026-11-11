@@ -3,14 +3,14 @@ use iroh::{Endpoint, address_lookup::{self, PkarrPublisher}, endpoint::presets, 
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tracing::info;
+
 
 use crate::BANNER;
 use crate::authorized_clients::{self, ClientAllowlist, ClientGate};
 use crate::cli::ServerArgs;
 use crate::identity::{SERVER_KEY_FILE, load_or_create_secret_key};
 use crate::config_dir::config_dir;
-use crate::protocols::{file_send::{alpn::FILE_ALPN_V1, file_send_protocol_handler::FileServerProtocolV1}, list_volumes::{alpn::LIST_VOLUMES_ALPN_V1, list_volumes_protocol_handler::ListVolumesServerProtocolV1}, ping::{alpn::PING_ALPN_V1, ping_protocol_handler::PingServerProtocolV1}, proxy::{alpn::TCP_PROXY_ALPN_V2, proxy_protocol_handler::ProxyServerProtocolV2, target_policy::TargetPolicy}, rsync::{alpn::RSYNC_ALPN_V1, rsync_protocol_handler::RsyncServerProtocolV1}};
+use crate::protocols::{file_send::{alpn::FILE_ALPN, file_send_protocol_handler::FileServerProtocol}, list_volumes::{alpn::LIST_VOLUMES_ALPN, list_volumes_protocol_handler::ListVolumesServerProtocol}, ping::{alpn::PING_ALPN, ping_protocol_handler::PingServerProtocol}, proxy::{alpn::TCP_PROXY_ALPN, proxy_protocol_handler::ProxyServerProtocol, target_policy::TargetPolicy}, rsync::{alpn::RSYNC_ALPN, rsync_protocol_handler::RsyncServerProtocol}};
 
 /// Parses `-v`/`--volume` specs of the form `name:path` into a name -> canonicalized
 /// root directory map. Each path must exist and be a directory; failing fast here (at
@@ -107,18 +107,18 @@ pub async fn run_server(args: ServerArgs) -> Result<()> {
         .await?;
 
     // Only enabled features are registered; any other ALPN fails the QUIC handshake.
-    let mut router = Router::builder(endpoint).accept(PING_ALPN_V1, PingServerProtocolV1);
+    let mut router = Router::builder(endpoint).accept(PING_ALPN, PingServerProtocol);
     if !policy.is_empty() {
-        router = router.accept(TCP_PROXY_ALPN_V2, ProxyServerProtocolV2 { policy });
+        router = router.accept(TCP_PROXY_ALPN, ProxyServerProtocol { policy });
     }
     if args.file {
-        router = router.accept(FILE_ALPN_V1, FileServerProtocolV1 { volumes: volumes.clone() });
+        router = router.accept(FILE_ALPN, FileServerProtocol { volumes: volumes.clone() });
     }
     if args.rsync {
-        router = router.accept(RSYNC_ALPN_V1, RsyncServerProtocolV1 { volumes: volumes.clone() });
+        router = router.accept(RSYNC_ALPN, RsyncServerProtocol { volumes: volumes.clone() });
     }
     if args.file || args.rsync {
-        router = router.accept(LIST_VOLUMES_ALPN_V1, ListVolumesServerProtocolV1 { volumes });
+        router = router.accept(LIST_VOLUMES_ALPN, ListVolumesServerProtocol { volumes });
     }
     let router = router.spawn();
 
@@ -126,8 +126,10 @@ pub async fn run_server(args: ServerArgs) -> Result<()> {
     // and it must stay visible at the default (error-only) log level.
     println!("{}", router.endpoint().id());
 
-    tokio::signal::ctrl_c().await?;
-    info!("Shutting down server");
+    let signal = crate::signals::shutdown_signal().await;
+    crate::signals::announce(signal);
+    // Closes every client connection cleanly, so clients notice at once rather than after
+    // QUIC's idle timeout.
     router.shutdown().await?;
 
     Ok(())

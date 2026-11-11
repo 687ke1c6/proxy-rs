@@ -4,16 +4,17 @@ use iroh::{endpoint::{Connection, SendStream}, protocol::{AcceptError, ProtocolH
 use tokio::net::TcpStream;
 use tracing::{info, warn};
 
-use crate::protocols::{ack::Ack, codec::StreamCodec, proxy::{proxy_header::{ACK_BAD_VERSION, ACK_CONNECT_FAILED, ACK_NOT_ALLOWED, PROXY_HEADER_VERSION, ProxyHeader}, target_policy::TargetPolicy}};
+use crate::protocols::{ack::Ack, codec::StreamCodec, proxy::{proxy_header::{ACK_CONNECT_FAILED, ACK_NOT_ALLOWED, ProxyHeader}, target_policy::TargetPolicy}};
 use crate::identity::short_id;
 use crate::stream_helpers::proxy_streams;
+use crate::errors::display_chain;
 
 #[derive(Debug, Clone)]
-pub struct ProxyServerProtocolV2 {
+pub struct ProxyServerProtocol {
     pub policy: Arc<TargetPolicy>,
 }
 
-impl ProtocolHandler for ProxyServerProtocolV2 {
+impl ProtocolHandler for ProxyServerProtocol {
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
         self.handle(connection).await
             .map_err(|e| AcceptError::from_boxed(e.into()))
@@ -29,17 +30,12 @@ async fn reject(send: &mut SendStream, connection: &Connection, code: u8, msg: S
     Ok(())
 }
 
-impl ProxyServerProtocolV2 {
+impl ProxyServerProtocol {
     async fn handle(&self, connection: Connection) -> anyhow::Result<()> {
         let client = connection.remote_id();
         let (mut iroh_send, mut iroh_recv) = connection.accept_bi().await?;
 
         let header = ProxyHeader::decode(&mut iroh_recv).await?;
-        if header.version != PROXY_HEADER_VERSION {
-            let msg = format!("unsupported proxy header version {} (expected {PROXY_HEADER_VERSION})", header.version);
-            warn!("{msg} from {client}");
-            return reject(&mut iroh_send, &connection, ACK_BAD_VERSION, msg).await;
-        }
 
         let tcp_target = format!("{}:{}", header.host, header.port);
         if !self.policy.allows(&header.host, header.port) {
@@ -66,7 +62,7 @@ impl ProxyServerProtocolV2 {
 
         let (tcp_read, tcp_write) = tcp.into_split();
         if let Err(e) = proxy_streams(iroh_recv, iroh_send, tcp_read, tcp_write).await {
-            info!("Proxy stream to {tcp_target} for {client} ended with error: {e:#}");
+            info!("Proxy stream to {tcp_target} for {client} ended with error: {}", display_chain(&e));
         }
         info!("Connection from {client} to {tcp_target} closed");
         Ok(())

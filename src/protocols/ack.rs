@@ -1,7 +1,6 @@
-use proxy_rs_derive::StreamCodec;
+use serde::{Deserialize, Serialize};
 
-
-#[derive(StreamCodec)]
+#[derive(Serialize, Deserialize)]
 pub struct Ack {
     pub ack: u8,
     pub msg: String,

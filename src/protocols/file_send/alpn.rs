@@ -1,1 +1,2 @@
-pub const FILE_ALPN_V1: &[u8] = b"proxy-rs/file/1";
+// Bump the trailing number on any wire change to this protocol's messages (see `codec.rs`).
+pub const FILE_ALPN: &[u8] = b"proxy-rs/file/2";

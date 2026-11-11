@@ -1,1 +1,2 @@
-pub const TCP_PROXY_ALPN_V2: &[u8] = b"proxy-rs/tcp/2";
+// Bump the trailing number on any wire change to this protocol's messages (see `codec.rs`).
+pub const TCP_PROXY_ALPN: &[u8] = b"proxy-rs/tcp/3";

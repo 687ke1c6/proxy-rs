@@ -6,9 +6,10 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use tracing::{error, warn};
 
+use crate::errors::display_chain;
 use crate::id_file;
 use crate::identity::short_id;
-use crate::protocols::ping::alpn::PING_ALPN_V1;
+use crate::protocols::ping::alpn::PING_ALPN;
 use crate::stream_helpers::{close_reason_suffix, path_kind_suffix, watch_path_kind};
 
 pub const FILENAME: &str = "authorized-clients";
@@ -97,7 +98,7 @@ impl ClientAllowlist {
             Ok(ids) if ids.is_empty() && self.fixed.is_empty() => return Access::Allowed { label: None },
             Ok(mut ids) => ids.remove(&id),
             Err(e) => {
-                error!("{e:#}; denying clients not given via --allow");
+                error!("{}; denying clients not given via --allow", display_chain(&e));
                 None
             }
         };
@@ -136,7 +137,7 @@ impl EndpointHooks for ClientGate {
         // it drops), so it marks a client session; other ALPNs (e.g. one connection per
         // proxied socket) would be too noisy to print. Printed rather than logged so it's
         // visible at the default (error-only) log level.
-        if conn.alpn() == PING_ALPN_V1 {
+        if conn.alpn() == PING_ALPN {
             let client = match label {
                 Some(label) => format!("{label} [{}]", short_id(id)),
                 None => short_id(id),

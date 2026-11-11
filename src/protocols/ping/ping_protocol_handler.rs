@@ -5,16 +5,16 @@ use crate::protocols::{codec::StreamCodec, ping::ping_header::PingHeader};
 use crate::identity::short_id;
 
 #[derive(Debug, Clone)]
-pub struct PingServerProtocolV1;
+pub struct PingServerProtocol;
 
-impl ProtocolHandler for PingServerProtocolV1 {
+impl ProtocolHandler for PingServerProtocol {
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
         self.handle(connection).await
             .map_err(|e| AcceptError::from_boxed(e.into()))
     }
 }
 
-impl PingServerProtocolV1 {
+impl PingServerProtocol {
     async fn handle(&self, connection: Connection) -> anyhow::Result<()> {
         info!("Accepted ping connection from {}", short_id(connection.remote_id()));
         let (mut send, mut recv) = connection.accept_bi().await?;

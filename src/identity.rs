@@ -18,7 +18,7 @@ pub fn short_id(id: impl std::fmt::Display) -> String {
     if id.len() <= 11 || !id.is_ascii() {
         return id;
     }
-    format!("{}...{}", &id[..5], &id[id.len() - 4..])
+    format!("{}...{}", &id[..5], &id[id.len() - 3..])
 }
 
 /// Loads the hex-encoded secret key at `<config_dir>/<file_name>`, generating and saving
