@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use iroh::{EndpointId, endpoint::{AfterHandshakeOutcome, ConnectionInfo, EndpointHooks}};
+use iroh::{EndpointId, endpoint::{AfterHandshakeOutcome, Connection, EndpointHooks}};
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::PathBuf;
@@ -10,7 +10,7 @@ use crate::errors::display_chain;
 use crate::id_file;
 use crate::identity::short_id;
 use crate::protocols::ping::alpn::PING_ALPN;
-use crate::stream_helpers::{close_reason_suffix, path_kind_suffix, watch_path_kind};
+use crate::stream_helpers::{PathKindWatch, close_reason_suffix};
 
 pub const FILENAME: &str = "authorized-clients";
 
@@ -121,7 +121,7 @@ pub struct ClientGate {
 }
 
 impl EndpointHooks for ClientGate {
-    async fn after_handshake<'a>(&'a self, conn: &'a ConnectionInfo) -> AfterHandshakeOutcome {
+    async fn after_handshake<'a>(&'a self, conn: &'a Connection) -> AfterHandshakeOutcome {
         if !conn.side().is_server() {
             return AfterHandshakeOutcome::Accept;
         }
@@ -142,14 +142,15 @@ impl EndpointHooks for ClientGate {
                 Some(label) => format!("{label} [{}]", short_id(id)),
                 None => short_id(id),
             };
-            let mut paths = conn.paths();
-            println!("Client connected: {client}{}", path_kind_suffix(&mut paths));
-            let conn = conn.clone();
+            let paths = PathKindWatch::new(conn);
+            println!("Client connected: {client}{}", paths.suffix());
+            // Weak handle, not a clone: iroh's hook docs warn that a strong `Connection`
+            // kept here would keep the connection alive and disable close-on-drop.
+            let closed = conn.weak_handle().closed();
             tokio::spawn(async move {
-                let path_changes = watch_path_kind(paths, |kind| println!("Client {client} now {kind}"));
                 let reason = tokio::select! {
-                    closed = conn.closed() => closed.map(|(reason, _)| close_reason_suffix(&reason)).unwrap_or_default(),
-                    () = path_changes => unreachable!(),
+                    closed = closed => closed.map(|closed| close_reason_suffix(&closed.reason)).unwrap_or_default(),
+                    () = paths.run(|kind| println!("Client {client} now {kind}")) => unreachable!(),
                 };
                 println!("Client disconnected: {client}{reason}");
             });

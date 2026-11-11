@@ -1,6 +1,7 @@
 use anyhow::Result;
-use iroh::Watcher;
-use iroh::endpoint::{ConnectionError, PathInfoList, PathWatcher, RecvStream, SendStream};
+use iroh::TransportAddr;
+use iroh::endpoint::{Connection, ConnectionError, PathEvent, PathEventStream, PathList, RecvStream, SendStream, WeakConnectionHandle};
+use tokio_stream::StreamExt;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 
 /// Why a connection ended, as a ` (reason)` suffix for a console line, or empty for a
@@ -12,33 +13,68 @@ pub fn close_reason_suffix(reason: &ConnectionError) -> String {
     }
 }
 
+/// `"direct"` or `"relay"` for a path's remote address.
+fn kind_of(addr: &TransportAddr) -> &'static str {
+    if addr.is_relay() { "relay" } else { "direct" }
+}
+
 /// `"direct"` or `"relay"`: the kind of network path a connection currently sends on, or
 /// `None` if none is selected yet.
-fn selected_path_kind(paths: &PathInfoList) -> Option<&'static str> {
+fn selected_path_kind(paths: &PathList) -> Option<&'static str> {
     paths.iter().find(|p| p.is_selected()).map(|p| if p.is_relay() { "relay" } else { "direct" })
+}
+
+fn suffix(kind: Option<&'static str>) -> String {
+    kind.map(|kind| format!(" ({kind})")).unwrap_or_default()
 }
 
 /// The connection's current path kind as a ` (direct)`/` (relay)` suffix for its
 /// "connected" console line, or empty if no path is selected yet.
-pub fn path_kind_suffix(paths: &mut PathWatcher) -> String {
-    selected_path_kind(&paths.get()).map(|kind| format!(" ({kind})")).unwrap_or_default()
+pub fn path_kind_suffix(conn: &Connection) -> String {
+    suffix(selected_path_kind(&conn.paths()))
 }
 
-/// Calls `on_change` with `"direct"`/`"relay"` whenever the connection's selected path
-/// switches kind, e.g. when holepunching upgrades a relayed connection to direct.
-/// `paths` should be the watcher [`path_kind_suffix`] was called with, so the kind already
-/// printed isn't repeated. Never returns, even once the connection is gone: race it
-/// against the connection's `closed()`.
-pub async fn watch_path_kind(mut paths: PathWatcher, on_change: impl Fn(&'static str)) {
-    let mut current = selected_path_kind(&paths.get());
-    while let Ok(list) = paths.updated().await {
-        let kind = selected_path_kind(&list);
-        if kind.is_some() && kind != current {
-            on_change(kind.unwrap());
-            current = kind;
-        }
+/// Follows a connection's selected path kind (relay/direct), e.g. for a "connected" line
+/// followed by "now direct" once holepunching succeeds. Holds only a weak handle, so it
+/// never keeps the connection alive.
+pub struct PathKindWatch {
+    events: PathEventStream,
+    weak: WeakConnectionHandle,
+    current: Option<&'static str>,
+}
+
+impl PathKindWatch {
+    /// Subscribes to path events *before* reading the current kind, so a switch in
+    /// between can't be missed.
+    pub fn new(conn: &Connection) -> Self {
+        let events = conn.path_events();
+        let current = selected_path_kind(&conn.paths());
+        PathKindWatch { events, weak: conn.weak_handle(), current }
     }
-    std::future::pending().await
+
+    /// The kind at subscription time, as a ` (direct)`/` (relay)` suffix (or empty).
+    pub fn suffix(&self) -> String {
+        suffix(self.current)
+    }
+
+    /// Calls `on_change` with `"direct"`/`"relay"` whenever the selected path switches kind
+    /// (the kind from [`Self::suffix`] isn't repeated). Never returns, even once the
+    /// connection is gone: race it against the connection's `closed()`.
+    pub async fn run(mut self, on_change: impl Fn(&'static str)) {
+        while let Some(event) = self.events.next().await {
+            let kind = match event {
+                PathEvent::Selected { remote_addr, .. } => Some(kind_of(&remote_addr)),
+                // Missed events: re-read the current state instead.
+                PathEvent::Lagged { .. } => self.weak.upgrade().and_then(|conn| selected_path_kind(&conn.paths())),
+                _ => continue,
+            };
+            if let Some(kind) = kind && Some(kind) != self.current {
+                on_change(kind);
+                self.current = Some(kind);
+            }
+        }
+        std::future::pending().await
+    }
 }
 
 /// Proxies an iroh bi-stream <-> a local read/write pair, TCP-style: EOF on one side

@@ -8,7 +8,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tracing::{debug, error, info, warn};
 
-use crate::{protocols::{ack::Ack, codec::StreamCodec, file_send::{alpn::FILE_ALPN, file_send_header::FileSendHeader}, list_volumes::{alpn::LIST_VOLUMES_ALPN, list_volumes_header::{ListVolumesRequest, ListVolumesResponse}}, ping::{alpn::PING_ALPN, ping_header::PingHeader}, proxy::{alpn::TCP_PROXY_ALPN, proxy_header::{ACK_CONNECT_FAILED, ACK_NOT_ALLOWED, ProxyHeader}}, rsync::{alpn::RSYNC_ALPN, rsync_header::RsyncHeader}}, stream_helpers::{close_reason_suffix, path_kind_suffix, proxy_process_streams, proxy_streams, watch_path_kind}};
+use crate::{protocols::{ack::Ack, codec::StreamCodec, file_send::{alpn::FILE_ALPN, file_send_header::FileSendHeader}, list_volumes::{alpn::LIST_VOLUMES_ALPN, list_volumes_header::{ListVolumesRequest, ListVolumesResponse}}, ping::{alpn::PING_ALPN, ping_header::PingHeader}, proxy::{alpn::TCP_PROXY_ALPN, proxy_header::{ACK_CONNECT_FAILED, ACK_NOT_ALLOWED, ProxyHeader}}, rsync::{alpn::RSYNC_ALPN, rsync_header::RsyncHeader}}, stream_helpers::{PathKindWatch, close_reason_suffix, path_kind_suffix, proxy_process_streams, proxy_streams}};
 use crate::BANNER;
 use crate::errors::display_chain;
 use crate::signals::until_signal;
@@ -150,16 +150,23 @@ async fn maintain_session(endpoint: &Endpoint, server_node_id: EndpointId, serve
             Some(conn) => Ok(conn),
             None => ping_server(endpoint, server_node_id).await,
         };
+        // A failed attempt (only retried with `retry`) shows the next frame set, so each
+        // retry is visible; a fresh `Reconnecting` spinner already starts on a new one.
+        if attempt.is_err()
+            && let Some(spinner) = &spinner
+        {
+            spinner.next_frames();
+        }
         match attempt {
             Ok(conn) => {
                 if let Some(spinner) = spinner.take() {
                     spinner.finish();
                 }
-                let mut paths = conn.paths();
-                println!("Connected to {server}{}", path_kind_suffix(&mut paths));
+                let paths = PathKindWatch::new(&conn);
+                println!("Connected to {server}{}", paths.suffix());
                 let reason = tokio::select! {
                     reason = conn.closed() => reason,
-                    () = watch_path_kind(paths, |kind| println!("Connection to {server} now {kind}")) => unreachable!(),
+                    () = paths.run(|kind| println!("Connection to {server} now {kind}")) => unreachable!(),
                 };
                 let disconnected = format!("Disconnected from {server}{}", close_reason_suffix(&reason));
                 if !retry {
@@ -208,7 +215,7 @@ pub async fn run_list_volumes(server_node_id_str: Option<String>, name: Option<S
         let _session = ping_server(&endpoint, server_node_id).await?;
         let conn = connect(&endpoint, server_node_id, LIST_VOLUMES_ALPN).await?;
         spinner.finish();
-        println!("Connected to {}{}", server_label(node_name.as_deref(), server_node_id), path_kind_suffix(&mut conn.paths()));
+        println!("Connected to {}{}", server_label(node_name.as_deref(), server_node_id), path_kind_suffix(&conn));
 
         let (mut iroh_send, mut iroh_recv) = conn.open_bi().await?;
         ListVolumesRequest {}.encode(&mut iroh_send).await?;
@@ -310,7 +317,7 @@ pub async fn run_send_file(file_path: String, server_node_id_str: Option<String>
         let _session = ping_server(&endpoint, server_node_id).await?;
         let conn = connect(&endpoint, server_node_id, FILE_ALPN).await?;
         spinner.finish();
-        println!("Connected to {}{}", server_label(node_name.as_deref(), server_node_id), path_kind_suffix(&mut conn.paths()));
+        println!("Connected to {}{}", server_label(node_name.as_deref(), server_node_id), path_kind_suffix(&conn));
 
         let (mut iroh_send, mut iroh_recv) = conn.open_bi().await?;
         info!("sending file header");
