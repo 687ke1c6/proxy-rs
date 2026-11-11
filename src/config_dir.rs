@@ -27,3 +27,12 @@ pub fn config_dir() -> Result<PathBuf> {
         .with_context(|| format!("failed to create config dir: {}", dir.display()))?;
     Ok(dir)
 }
+
+/// ` config=<dir>` for the end of every mode's startup banner, whether the directory is the
+/// default or set via `--config-dir`, as an absolute path (so `-d ./cfg` shows where it is).
+pub fn banner_suffix() -> String {
+    match config_dir() {
+        Ok(dir) => format!(" config={}", std::path::absolute(&dir).unwrap_or(dir).display()),
+        Err(e) => format!(" config=? ({e:#})"),
+    }
+}

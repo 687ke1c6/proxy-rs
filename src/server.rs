@@ -9,7 +9,7 @@ use crate::BANNER;
 use crate::authorized_clients::{self, ClientAllowlist, ClientGate};
 use crate::cli::ServerArgs;
 use crate::identity::{SERVER_KEY_FILE, load_or_create_secret_key};
-use crate::config_dir::config_dir;
+use crate::config_dir::{banner_suffix, config_dir};
 use crate::protocols::{file_send::{alpn::FILE_ALPN, file_send_protocol_handler::FileServerProtocol}, list_volumes::{alpn::LIST_VOLUMES_ALPN, list_volumes_protocol_handler::ListVolumesServerProtocol}, ping::{alpn::PING_ALPN, ping_protocol_handler::PingServerProtocol}, proxy::{alpn::TCP_PROXY_ALPN, proxy_protocol_handler::ProxyServerProtocol, target_policy::TargetPolicy}, rsync::{alpn::RSYNC_ALPN, rsync_protocol_handler::RsyncServerProtocol}};
 
 /// Parses `-v`/`--volume` specs of the form `name:path` into a name -> canonicalized
@@ -79,6 +79,7 @@ pub async fn run_server(args: ServerArgs) -> Result<()> {
         0 => summary += " clients=any",
         n => summary += &format!(" clients={n}"),
     }
+    summary += &banner_suffix();
     println!("{summary}");
     let mut volumes_sorted: Vec<_> = volumes.iter().collect();
     volumes_sorted.sort();

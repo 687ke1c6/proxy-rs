@@ -10,6 +10,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::{protocols::{ack::Ack, codec::StreamCodec, file_send::{alpn::FILE_ALPN, file_send_header::FileSendHeader}, list_volumes::{alpn::LIST_VOLUMES_ALPN, list_volumes_header::{ListVolumesRequest, ListVolumesResponse}}, ping::{alpn::PING_ALPN, ping_header::PingHeader}, proxy::{alpn::TCP_PROXY_ALPN, proxy_header::{ACK_CONNECT_FAILED, ACK_NOT_ALLOWED, ProxyHeader}}, rsync::{alpn::RSYNC_ALPN, rsync_header::RsyncHeader}}, stream_helpers::{PathKindWatch, close_reason_suffix, path_kind_suffix, proxy_process_streams, proxy_streams}};
 use crate::BANNER;
+use crate::config_dir::banner_suffix;
 use crate::errors::display_chain;
 use crate::signals::until_signal;
 use crate::socks5;
@@ -195,7 +196,7 @@ async fn maintain_session(endpoint: &Endpoint, server_node_id: EndpointId, serve
 }
 
 pub async fn run_list_volumes(server_node_id_str: Option<String>, name: Option<String>) -> Result<()> {
-    println!("{BANNER} client volumes");
+    println!("{BANNER} client volumes{}", banner_suffix());
 
     let (node_name, server_node_id) = resolve_node_id(server_node_id_str, name)?;
     let spinner = Spinner::start(format!("Connecting to {}", server_label(node_name.as_deref(), server_node_id)));
@@ -279,7 +280,7 @@ where
 }
 
 pub async fn run_send_file(file_path: String, server_node_id_str: Option<String>, name: Option<String>, target: Option<String>, can_overwrite: bool) -> Result<()> {
-    println!("{BANNER} client file {file_path} -> {}", target.as_deref().unwrap_or("(default volume)"));
+    println!("{BANNER} client file {file_path} -> {}{}", target.as_deref().unwrap_or("(default volume)"), banner_suffix());
 
     let full_path = std::fs::canonicalize(&file_path).with_context(|| format!("Failed to canonicalize path: {file_path}"))?;
     let metadata = tokio::fs::metadata(&full_path).await?;
@@ -412,8 +413,8 @@ pub async fn run_sync_rsh(argv: Vec<String>, server_node_id_str: Option<String>,
 pub async fn run_tcp_client(typ: ProxyType, bind_addr: String, tunnel_target: Option<(String, u16)>, server_node_id_str: Option<String>, name: Option<String>, retry: bool) -> Result<()> {
     let retry_flag = if retry { " retry" } else { "" };
     match &tunnel_target {
-        Some((remote_host, remote_port)) => println!("{BANNER} client {} {bind_addr} -> {remote_host}:{remote_port}{retry_flag}", typ.label()),
-        None => println!("{BANNER} client {} {bind_addr}{retry_flag}", typ.label()),
+        Some((remote_host, remote_port)) => println!("{BANNER} client {} {bind_addr} -> {remote_host}:{remote_port}{retry_flag}{}", typ.label(), banner_suffix()),
+        None => println!("{BANNER} client {} {bind_addr}{retry_flag}{}", typ.label(), banner_suffix()),
     }
 
     let (node_name, server_node_id) = resolve_node_id(server_node_id_str, name)?;

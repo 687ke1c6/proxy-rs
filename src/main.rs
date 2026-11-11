@@ -29,6 +29,11 @@ async fn main() -> Result<()> {
     // captured (`--allow $(proxy-rs client whoami)`), so the banner and logs go to stderr
     // (rsync passes that through to the user) instead of stdout. Every other mode prints
     // its own banner line, with its settings appended.
+    // First, so every banner (and anything else) sees the right config dir.
+    if let Some(dir) = cli.config_dir.clone() {
+        config_dir::set_config_dir_override(dir);
+    }
+
     let quiet_stdout = matches!(
         &cli.command,
         Command::Client(ClientArgs { mode: ClientMode::SyncRsh(_) | ClientMode::Whoami(_), .. })
@@ -42,13 +47,9 @@ async fn main() -> Result<()> {
     if quiet_stdout {
         subscriber.with_writer(std::io::stderr).init();
         let mode = if matches!(&cli.command, Command::Client(ClientArgs { mode: ClientMode::Whoami(_), .. })) { "whoami" } else { "sync-rsh" };
-        eprintln!("{BANNER} client {mode}");
+        eprintln!("{BANNER} client {mode}{}", config_dir::banner_suffix());
     } else {
         subscriber.init();
-    }
-
-    if let Some(dir) = cli.config_dir {
-        config_dir::set_config_dir_override(dir);
     }
 
     match cli.command {
