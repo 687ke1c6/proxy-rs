@@ -1,5 +1,5 @@
 # Run `just` to list recipes. Extra arguments after a recipe's own
-# parameters are passed through to proxy-rs (e.g. `just socks5 Brave Otter -d /tmp/cfg`).
+# parameters are passed through to proxy-rs (e.g. `just listen "Brave Otter" 127.0.0.1:1080 --retry`).
 
 bin := "target/debug/proxy-rs"
 
@@ -35,51 +35,33 @@ test *args:
 e2e:
     cargo test --test e2e -- --ignored --nocapture
 
-# Print this client's node id (for a server's --allow)
+# Config file for the server recipes. Separate from the default one the client recipes
+# use, so a server and a client can run on this machine (each file is its own node id).
+server_config := env_var('HOME') + "/.proxy-rs/server.toml"
+
+# Print this machine's client node id (for a server's --allow)
 whoami:
-    cargo run -q -- client whoami
+    cargo run -q -- whoami
 
-# Run a server; pass flags through, e.g. `just server --allow <id> -t localhost:22`
-server *args:
-    cargo run -- server {{args}}
+# Run a server: `just server socks5 -t '*'`, `just server tunnel --remote-host localhost --remote-port 22`
+server mode *args:
+    cargo run -- {{mode}} --config "{{server_config}}" {{args}}
 
-# Run an open-proxy server (any target) allowing only this machine's client key
+# Run an open SOCKS5 server (any target) allowing only this machine's client key
 server-local *args:
-    cargo run -- server --allow "$(cargo run -q -- client whoami)" -t '*' {{args}}
+    cargo run -- socks5 --config "{{server_config}}" --allow "$(cargo run -q -- whoami)" -t '*' {{args}}
 
-# SOCKS5 proxy client to the saved node <name> (omit name for the interactive menu)
-socks5 name="" listen="127.0.0.1:1080" *args:
-    cargo run -- client socks5 --listen {{listen}} {{ if name != "" { "--name '" + name + "'" } else { "" } }} {{args}}
+# Client: forward local <listen> to the saved server <name> (omit name for the interactive menu)
+listen name="" listen="127.0.0.1:1080" *args:
+    cargo run -- --listen {{listen}} {{ if name != "" { "--name '" + name + "'" } else { "" } }} {{args}}
 
-# HTTP proxy client to the saved node <name> (omit name for the interactive menu)
-http name="" listen="127.0.0.1:8080" *args:
-    cargo run -- client http --listen {{listen}} {{ if name != "" { "--name '" + name + "'" } else { "" } }} {{args}}
-
-# ssh -L style tunnel: local <listen> -> <remote> (host:port) on the server's side
-tunnel node remote listen="127.0.0.1:9000" *args:
-    cargo run -- client tunnel -n {{node}} --listen {{listen}} \
-        --remote-host "$(echo '{{remote}}' | sed 's/:[^:]*$//')" \
-        --remote-port "$(echo '{{remote}}' | sed 's/.*://')" {{args}}
-
-# List a server's volumes
-volumes node:
-    cargo run -- client volumes -n {{node}}
-
-# Send a file into a server volume, e.g. `just send <id> ./a.mkv media/movies`
-send node path target *args:
-    cargo run -- client file {{path}} -n {{node}} -t {{target}} {{args}}
-
-# rsync push a directory into a server volume, e.g. `just sync <id> ./dir/ media/backup/`
+# rsync push a directory into a volume of an rsync server, e.g. `just sync <id> ./dir/ media/backup/`
 sync node src dest: build
-    rsync -av -e "'{{justfile_directory()}}/{{bin}}' client sync-rsh -n {{node}}" {{src}} "x:{{dest}}"
+    rsync -av -e "'{{justfile_directory()}}/{{bin}}' --pipe -n {{node}}" {{src}} "x:{{dest}}"
 
 # Build the runtime Docker image (Alpine, musl)
 docker tag="proxy-rs":
     docker build -t {{tag}} .
-
-# Cross-compile for armv7 (Raspberry Pi) via Docker; binary lands in target/armv7/
-armv7:
-    docker build -f Dockerfile.armv7 --output type=local,dest=target/armv7 .
 
 clean:
     cargo clean

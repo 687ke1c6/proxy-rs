@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# End-to-end smoke test: start a proxy-rs server + a proxy-rs SOCKS5 client,
-# then curl a local ncat HTTP listener (started by this script) through the
-# proxy and check the response.
+# End-to-end smoke test: start a proxy-rs server in socks5 mode + a proxy-rs client
+# (--listen), then curl a local ncat HTTP listener (started by this script) through
+# the proxy and check the response.
 # The server only allows `-t $ALLOWED_TARGET`, so a second curl to a target
 # outside that allowlist must be refused with SOCKS5 reply 0x02 ("not allowed").
 # The server only admits the test client's node id (--allow), so a client with a
-# different key (its own --config-dir) must be refused at its startup ping.
+# different key (its own --config file) must be refused at its startup ping.
 # Finally the server is stopped, and the client (no --retry) must exit with an error.
 #
 # Usage:
@@ -39,7 +39,10 @@ fi
 
 WORKDIR=$(mktemp -d)
 cd "$WORKDIR"
-export HOME="$WORKDIR" # isolate ~/.proxy-rs/{server-key,known-servers} from the real dev files
+export HOME="$WORKDIR" # isolate ~/.proxy-rs/config.toml from the real dev file
+# Server and client run on one host here, so each gets its own config file (= node id).
+SERVER_CONFIG="$WORKDIR/server.toml"
+CLIENT_CONFIG="$WORKDIR/client.toml"
 
 NCAT_PID=""
 SERVER_PID=""
@@ -68,11 +71,11 @@ for _ in $(seq 1 50); do
     sleep 0.2
 done
 
-CLIENT_ID=$("$BIN" client whoami)
+CLIENT_ID=$("$BIN" whoami --config "$CLIENT_CONFIG")
 echo "client NodeId: $CLIENT_ID"
 
-echo "== starting proxy-rs server ($WORKDIR/server.log) =="
-"$BIN" server -t "$ALLOWED_TARGET" --allow "$CLIENT_ID" >server.log 2>&1 &
+echo "== starting proxy-rs socks5 server ($WORKDIR/server.log) =="
+"$BIN" socks5 --config "$SERVER_CONFIG" -t "$ALLOWED_TARGET" --allow "$CLIENT_ID" >server.log 2>&1 &
 SERVER_PID=$!
 
 NODE_ID=""
@@ -93,8 +96,8 @@ if [[ -z "$NODE_ID" ]]; then
 fi
 echo "server NodeId: $NODE_ID"
 
-echo "== starting proxy-rs SOCKS5 client ($WORKDIR/client.log) =="
-"$BIN" client socks5 --listen "127.0.0.1:$SOCKS5_PORT" -n "$NODE_ID" >client.log 2>&1 &
+echo "== starting proxy-rs client ($WORKDIR/client.log) =="
+"$BIN" --config "$CLIENT_CONFIG" --listen "127.0.0.1:$SOCKS5_PORT" -n "$NODE_ID" >client.log 2>&1 &
 CLIENT_PID=$!
 
 READY=0
@@ -111,7 +114,7 @@ for _ in $(seq 1 50); do
     sleep 0.2
 done
 if [[ "$READY" -ne 1 ]]; then
-    echo "client never opened SOCKS5 listener on port $SOCKS5_PORT:" >&2
+    echo "client never opened its listener on port $SOCKS5_PORT:" >&2
     cat client.log >&2
     exit 1
 fi
@@ -148,7 +151,7 @@ fi
 echo "OK: target outside the allowlist was refused: $DENIED_ERR"
 
 echo "== starting a client that is not in the server's --allow list =="
-STRANGER_OUT=$(timeout 30 "$BIN" --config-dir "$WORKDIR/stranger" client socks5 --listen "127.0.0.1:$((SOCKS5_PORT + 1))" -n "$NODE_ID" 2>&1) && STRANGER_EXIT=0 || STRANGER_EXIT=$?
+STRANGER_OUT=$(timeout 30 "$BIN" --config "$WORKDIR/stranger.toml" --listen "127.0.0.1:$((SOCKS5_PORT + 1))" -n "$NODE_ID" 2>&1) && STRANGER_EXIT=0 || STRANGER_EXIT=$?
 if [[ "$STRANGER_EXIT" -eq 0 || "$STRANGER_EXIT" -eq 124 || "$STRANGER_OUT" != *"not in its allowlist"* ]]; then
     echo "expected the unlisted client to be refused, got exit $STRANGER_EXIT: $STRANGER_OUT" >&2
     exit 1

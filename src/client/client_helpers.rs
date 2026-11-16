@@ -1,5 +1,3 @@
-use std::io::Write;
-use std::path::PathBuf;
 use std::str::FromStr;
 
 use anyhow::{Context, Result};
@@ -8,21 +6,8 @@ use iroh::EndpointId;
 use rand::Rng;
 use tracing::{info, warn};
 
-use crate::config_dir::config_dir;
-use crate::id_file;
+use crate::config::{self, save_server};
 use crate::identity::short_id;
-
-const FILENAME: &str = "known-servers";
-
-/// Written at the top of a new `known-servers` file.
-const TEMPLATE: &str = "\
-# Server node ids this client knows, one per line. Anything after the id is an optional
-# name: pass it as `--name` instead of `-n <node-id>`, and it's shown when connecting.
-";
-
-fn path() -> Result<PathBuf> {
-    Ok(config_dir()?.join(FILENAME))
-}
 
 const ADJECTIVES: &[&str] = &[
     "Amber", "Bouncy", "Cosmic", "Dapper", "Eager", "Focal", "Groovy",
@@ -38,7 +23,7 @@ const ANIMALS: &[&str] = &[
     "Unicorn", "Viper", "Walrus", "Xerus", "Yak", "Zebrafish",
 ];
 
-/// One `known-servers` line: a server node id and its optional name.
+/// One `[servers]` entry: a server node id and its optional name.
 struct KnownServer {
     id: EndpointId,
     name: Option<String>,
@@ -89,7 +74,7 @@ fn select_known_server() -> Result<(Option<String>, EndpointId)> {
 /// The `<new>` menu entry: prompts for a node id, then a name, and saves them. If a different
 /// saved server already has that name, asks before replacing that entry (names are unique);
 /// answering no asks for another name. If the id is already saved, its line is renamed rather
-/// than duplicated (one name per node id), and its current name is the prompt's default.
+/// than duplicated (the table is keyed by node id), and its current name is the prompt's default.
 fn add_new_server(servers: &[KnownServer]) -> Result<(Option<String>, EndpointId)> {
     let id = prompt_node_id()?;
     let default_name = servers
@@ -127,7 +112,7 @@ fn add_new_server(servers: &[KnownServer]) -> Result<(Option<String>, EndpointId
                 continue;
             }
         }
-        save(id, name.as_deref(), &clashes)?;
+        save_server(id, name.as_deref(), &clashes)?;
         return Ok((name, id));
     }
 }
@@ -168,9 +153,9 @@ pub fn resolve_node_id(node_id: Option<String>, name: Option<String>) -> Result<
                 Some(known) if known.name.as_deref() == Some(&name) => {}
                 Some(_) => {
                     info!("Naming saved server [{}] \"{name}\"", short_id(id));
-                    save(id, Some(&name), &[])?;
+                    save_server(id, Some(&name), &[])?;
                 }
-                None => append(id, Some(&name))?,
+                None => save_server(id, Some(&name), &[])?,
             }
             Ok((Some(name), id))
         }
@@ -178,7 +163,7 @@ pub fn resolve_node_id(node_id: Option<String>, name: Option<String>) -> Result<
             Some(known) => Ok((known.name, id)),
             None => {
                 let name = generate_name();
-                append(id, Some(&name))?;
+                save_server(id, Some(&name), &[])?;
                 Ok((Some(name), id))
             }
         },
@@ -197,8 +182,7 @@ pub fn resolve_node_id(node_id: Option<String>, name: Option<String>) -> Result<
                 }
                 None => {
                     let id = prompt_node_id()?;
-                    // `save`, not `append`: the id may already be saved under another name.
-                    save(id, Some(&name), &[])?;
+                    save_server(id, Some(&name), &[])?;
                     Ok((Some(name), id))
                 }
             }
@@ -207,100 +191,8 @@ pub fn resolve_node_id(node_id: Option<String>, name: Option<String>) -> Result<
     }
 }
 
-/// Reads `known-servers`, in file order. A missing file counts as empty.
+/// Reads the config file's `[servers]`, in file order.
 fn load() -> Result<Vec<KnownServer>> {
-    let path = path()?;
-    let content = match std::fs::read_to_string(&path) {
-        Ok(content) => content,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(e) => return Err(e).with_context(|| format!("failed to read {}", path.display())),
-    };
-    let entries = id_file::parse(&content).with_context(|| format!("invalid {}", path.display()))?;
+    let entries = config::read_ids(&config::config_path()?, config::SERVERS)?;
     Ok(entries.into_iter().map(|(id, name)| KnownServer { id, name }).collect())
-}
-
-/// Appends a server to `known-servers`, creating it (with the comment header) if missing.
-fn append(id: EndpointId, name: Option<&str>) -> Result<()> {
-    let path = path()?;
-    info!("Saving server [{}] to {}", short_id(id), path.display());
-    let is_new = !path.exists();
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-        .with_context(|| format!("failed to open {}", path.display()))?;
-    let header = if is_new { TEMPLATE } else { "" };
-    writeln!(file, "{header}{}", id_file::format_line(id, name))
-        .with_context(|| format!("failed to write {}", path.display()))
-}
-
-/// Saves `id` as `name` in `known-servers`, removing the entries for `replace` (servers
-/// whose name is being taken over). See `rewrite`.
-fn save(id: EndpointId, name: Option<&str>, replace: &[EndpointId]) -> Result<()> {
-    let path = path()?;
-    if !path.exists() {
-        return append(id, name);
-    }
-    let content = std::fs::read_to_string(&path).with_context(|| format!("failed to read {}", path.display()))?;
-    info!("Saving server [{}] to {}", short_id(id), path.display());
-    std::fs::write(&path, rewrite(&content, id, name, replace))
-        .with_context(|| format!("failed to write {}", path.display()))
-}
-
-/// `known-servers` content with `id` named `name`: its first line is rewritten in place and
-/// any later duplicates dropped (one name per node id), or a line is appended if it's not
-/// there; lines for `replace` ids are dropped. Every other line, comments included, is kept.
-fn rewrite(content: &str, id: EndpointId, name: Option<&str>, replace: &[EndpointId]) -> String {
-    let mut out = String::with_capacity(content.len());
-    let mut found = false;
-    for line in content.lines() {
-        match id_file::parse_line(line) {
-            Ok(Some((line_id, _))) if line_id == id && found => continue,
-            Ok(Some((line_id, _))) if line_id == id => {
-                found = true;
-                out += &id_file::format_line(id, name);
-            }
-            Ok(Some((line_id, _))) if replace.contains(&line_id) => continue,
-            _ => out += line,
-        }
-        out.push('\n');
-    }
-    if !found {
-        out += &id_file::format_line(id, name);
-        out.push('\n');
-    }
-    out
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn ids() -> (EndpointId, EndpointId, EndpointId) {
-        let id = |n: u8| iroh::SecretKey::from_bytes(&[n; 32]).public();
-        (id(1), id(2), id(3))
-    }
-
-    #[test]
-    fn renames_existing_id_in_place_and_drops_duplicates() {
-        let (a, b, _) = ids();
-        let content = format!("# header\n{a} Old\n{b} Other\n{a} Dup\n");
-        let out = rewrite(&content, a, Some("New Name"), &[]);
-        assert_eq!(out, format!("# header\n{a} New Name\n{b} Other\n"));
-    }
-
-    #[test]
-    fn appends_unknown_id() {
-        let (a, b, _) = ids();
-        let out = rewrite(&format!("{a} One\n"), b, Some("Two"), &[]);
-        assert_eq!(out, format!("{a} One\n{b} Two\n"));
-    }
-
-    #[test]
-    fn replaces_servers_whose_name_is_taken_over() {
-        let (a, b, c) = ids();
-        let content = format!("{a} Home\n# keep me\n{b} Work\n");
-        let out = rewrite(&content, c, Some("Home"), &[a]);
-        assert_eq!(out, format!("# keep me\n{b} Work\n{c} Home\n"));
-    }
 }

@@ -80,28 +80,27 @@ ncat localhost 4006
 
 ## Going through the proxy
 
-Start a server that allows the test ports:
+Start a server in the mode you want to test (each with its own `--config`, so it has its own node id), then a client pointed at it:
+
+| Server | Client | `ncat` client: add | `curl` client: add |
+|---|---|---|---|
+| `socks5 -t 'localhost:4000-4010'` | `--listen 127.0.0.1:1080` | `--proxy 127.0.0.1:1080 --proxy-type socks5 --proxy-dns remote` | `--socks5-hostname 127.0.0.1:1080` |
+| `http -t 'localhost:4000-4010'` | `--listen 127.0.0.1:8080` | `--proxy 127.0.0.1:8080 --proxy-type http` (uses CONNECT) | `-x http://127.0.0.1:8080` (plain-HTTP, non-CONNECT path) |
+| `tunnel --remote-host localhost --remote-port <port>` | `--listen 127.0.0.1:9000` | nothing, but replace `localhost <port>` with `127.0.0.1 9000` | nothing, but replace `localhost:<port>` with `127.0.0.1:9000` |
 
 ```bash
-cargo run -- server --allow <client-id> -t 'localhost:4000-4010'
+cargo run -- socks5 --config /tmp/socks.toml --allow "$(cargo run -q -- whoami)" -t 'localhost:4000-4010'
+cargo run -- --listen 127.0.0.1:1080 -n <server-node-id>
 ```
 
-Then take any client command from above and route it through one of the proxy clients:
-
-| Proxy client | `ncat` client: add | `curl` client: add |
-|---|---|---|
-| `client socks5 --listen 127.0.0.1:1080` | `--proxy 127.0.0.1:1080 --proxy-type socks5 --proxy-dns remote` | `--socks5-hostname 127.0.0.1:1080` |
-| `client http --listen 127.0.0.1:8080` | `--proxy 127.0.0.1:8080 --proxy-type http` (uses CONNECT) | `-x http://127.0.0.1:8080` (plain-HTTP, non-CONNECT path) |
-| `client tunnel --listen 127.0.0.1:9000 --remote-host localhost --remote-port <port>` | nothing, but replace `localhost <port>` with `127.0.0.1 9000` | nothing, but replace `localhost:<port>` with `127.0.0.1:9000` |
-
-Keep the target hostname as `localhost` (not `127.0.0.1`). The `-t` allowlist matches the hostname string the client sends, so for SOCKS5 use `--proxy-dns remote` / `--socks5-hostname` so it isn't resolved locally first.
+Keep the target hostname as `localhost` (not `127.0.0.1`). The `-t` allowlist matches the hostname string the application sends, so for SOCKS5 use `--proxy-dns remote` / `--socks5-hostname` so it isn't resolved locally first.
 
 For example, #3 through each:
 
 ```bash
 ncat --recv-only --proxy 127.0.0.1:1080 --proxy-type socks5 --proxy-dns remote localhost 4002 | sha256sum
 ncat --recv-only --proxy 127.0.0.1:8080 --proxy-type http localhost 4002 | sha256sum
-ncat --recv-only 127.0.0.1 9000 | sha256sum     # tunnel with --remote-port 4002
+ncat --recv-only 127.0.0.1 9000 | sha256sum     # tunnel server with --remote-port 4002
 ```
 
 Refusal check: port 4011 is outside the `-t` range, so the server should refuse it (SOCKS5 reply 2 "not allowed").

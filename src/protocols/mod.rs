@@ -1,8 +1,4 @@
-pub mod codec;
-pub mod proxy;
-pub mod file_send;
 pub mod ack;
+pub mod codec;
 pub mod ping;
-pub mod list_volumes;
-pub mod rsync;
-pub mod volume_paths;
+pub mod stream;

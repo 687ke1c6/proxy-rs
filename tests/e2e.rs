@@ -1,6 +1,6 @@
 //! End-to-end smoke tests.
 //!
-//! These spin up real proxy-rs server + client processes and a local `ncat`
+//! These spin up real proxy-rs server (socks5 mode) + client processes and a local `ncat`
 //! HTTP listener, hit it through the proxy (and check a target outside the
 //! server's `-t` allowlist is refused), so they need `ncat` installed and
 //! real processes/ports and are `#[ignore]`d by default. Run explicitly with:

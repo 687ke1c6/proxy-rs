@@ -1,6 +1,5 @@
 use anyhow::{bail, Result};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 /// A parsed HTTP proxy request.
 pub struct ProxyRequest {
@@ -17,7 +16,7 @@ pub struct ProxyRequest {
 }
 
 /// Perform an HTTP proxy handshake: read and parse the request, without responding.
-pub async fn handshake(stream: &mut TcpStream) -> Result<ProxyRequest> {
+pub async fn handshake<S: AsyncRead + AsyncWrite + Unpin>(stream: &mut S) -> Result<ProxyRequest> {
     let headers = read_headers(stream).await?;
     let headers_str = std::str::from_utf8(&headers)?;
 
@@ -54,14 +53,14 @@ pub async fn handshake(stream: &mut TcpStream) -> Result<ProxyRequest> {
 }
 
 /// Tell a `CONNECT` client its tunnel is up.
-pub async fn respond_connected(stream: &mut TcpStream) -> Result<()> {
+pub async fn respond_connected<S: AsyncRead + AsyncWrite + Unpin>(stream: &mut S) -> Result<()> {
     stream.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n").await?;
     Ok(())
 }
 
 /// Send a proxy-generated error response (e.g. `403 Forbidden`, `502 Bad Gateway`)
 /// with `body` as plain text.
-pub async fn respond_error(stream: &mut TcpStream, status: &str, body: &str) -> Result<()> {
+pub async fn respond_error<S: AsyncRead + AsyncWrite + Unpin>(stream: &mut S, status: &str, body: &str) -> Result<()> {
     let response = format!(
         "HTTP/1.1 {status}\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
@@ -71,7 +70,7 @@ pub async fn respond_error(stream: &mut TcpStream, status: &str, body: &str) -> 
 }
 
 /// Read bytes from `stream` until the end of the HTTP headers (`\r\n\r\n`).
-async fn read_headers(stream: &mut TcpStream) -> Result<Vec<u8>> {
+async fn read_headers<S: AsyncRead + AsyncWrite + Unpin>(stream: &mut S) -> Result<Vec<u8>> {
     let mut buf = Vec::with_capacity(1024);
     let mut tmp = [0u8; 1];
     loop {

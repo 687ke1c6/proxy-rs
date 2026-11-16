@@ -2,7 +2,7 @@ use anyhow::Result;
 use iroh::TransportAddr;
 use iroh::endpoint::{Connection, ConnectionError, PathEvent, PathEventStream, PathList, RecvStream, SendStream, WeakConnectionHandle};
 use tokio_stream::StreamExt;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
+use tokio::io::{AsyncRead, AsyncWrite};
 
 /// Why a connection ended, as a ` (reason)` suffix for a console line, or empty for a
 /// deliberate close by either side (a process exited or shut down cleanly).
@@ -26,12 +26,6 @@ fn selected_path_kind(paths: &PathList) -> Option<&'static str> {
 
 fn suffix(kind: Option<&'static str>) -> String {
     kind.map(|kind| format!(" ({kind})")).unwrap_or_default()
-}
-
-/// The connection's current path kind as a ` (direct)`/` (relay)` suffix for its
-/// "connected" console line, or empty if no path is selected yet.
-pub fn path_kind_suffix(conn: &Connection) -> String {
-    suffix(selected_path_kind(&conn.paths()))
 }
 
 /// Follows a connection's selected path kind (relay/direct), e.g. for a "connected" line
@@ -79,7 +73,6 @@ impl PathKindWatch {
 
 /// Proxies an iroh bi-stream <-> a local read/write pair, TCP-style: EOF on one side
 /// shuts down the other side's writer (half-close) and it returns once both are done.
-
 pub async fn proxy_streams<C, D>(iroh_recv: RecvStream, iroh_send: SendStream, local_read: C, local_write: D) -> Result<()>
 where
     C: AsyncRead + Unpin,
@@ -112,14 +105,3 @@ async fn wait_delivered(mut send: SendStream) {
     let _ = send.finish();
     let _ = send.stopped().await;
 }
-
-pub async fn copy_bytes<A, B>(a: &mut A, b: &mut B, size: usize) -> anyhow::Result<()>
-    where 
-        A: tokio::io::AsyncRead + Unpin,
-        B: tokio::io::AsyncWrite + Unpin 
-    {
-        let mut limited = a.take(size as u64);
-        tokio::io::copy(&mut limited, b).await?;
-        Ok(())
-    }
-

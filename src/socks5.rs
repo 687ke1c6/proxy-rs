@@ -1,17 +1,15 @@
 use anyhow::{bail, Result};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 /// SOCKS5 reply codes (RFC 1928 §6) sent via [`reply`].
 pub const REP_SUCCEEDED: u8 = 0x00;
-pub const REP_GENERAL_FAILURE: u8 = 0x01;
 pub const REP_NOT_ALLOWED: u8 = 0x02;
 pub const REP_CONNECTION_REFUSED: u8 = 0x05;
 
 /// Perform a SOCKS5 handshake on the given stream, up to and including the CONNECT
 /// request. Returns the requested target host and port. The caller must then send
 /// exactly one [`reply`] once it knows whether the target is reachable.
-pub async fn handshake(stream: &mut TcpStream) -> Result<(String, u16)> {
+pub async fn handshake<S: AsyncRead + AsyncWrite + Unpin>(stream: &mut S) -> Result<(String, u16)> {
     let version = stream.read_u8().await?;
     if version != 5 {
         bail!("unsupported SOCKS version: {version}");
@@ -69,7 +67,7 @@ pub async fn handshake(stream: &mut TcpStream) -> Result<(String, u16)> {
 }
 
 /// Send the SOCKS5 reply to a CONNECT request, with bound address 0.0.0.0:0.
-pub async fn reply(stream: &mut TcpStream, rep: u8) -> Result<()> {
+pub async fn reply<S: AsyncRead + AsyncWrite + Unpin>(stream: &mut S, rep: u8) -> Result<()> {
     stream
         .write_all(&[0x05, rep, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
         .await?;

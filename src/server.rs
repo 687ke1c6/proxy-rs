@@ -1,22 +1,18 @@
 use anyhow::{Context, Result};
 use iroh::{Endpoint, address_lookup::{self, PkarrPublisher}, endpoint::presets, protocol::Router};
-use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 
-
 use crate::BANNER;
-use crate::authorized_clients::{self, ClientAllowlist, ClientGate};
-use crate::cli::ServerArgs;
-use crate::identity::{SERVER_KEY_FILE, load_or_create_secret_key};
-use crate::config_dir::{banner_suffix, config_dir};
-use crate::protocols::{file_send::{alpn::FILE_ALPN, file_send_protocol_handler::FileServerProtocol}, list_volumes::{alpn::LIST_VOLUMES_ALPN, list_volumes_protocol_handler::ListVolumesServerProtocol}, ping::{alpn::PING_ALPN, ping_protocol_handler::PingServerProtocol}, proxy::{alpn::TCP_PROXY_ALPN, proxy_protocol_handler::ProxyServerProtocol, target_policy::TargetPolicy}, rsync::{alpn::RSYNC_ALPN, rsync_protocol_handler::RsyncServerProtocol}};
+use crate::allowlist::{ClientAllowlist, ClientGate};
+use crate::config::{banner_suffix, config_path, load_secret_key};
+use crate::protocols::ping::{alpn::PING_ALPN, ping_protocol_handler::PingServerProtocol};
+use crate::protocols::stream::{alpn::STREAM_ALPN, rsync::Volumes, stream_protocol_handler::{Mode, StreamServerProtocol}};
 
 /// Parses `-v`/`--volume` specs of the form `name:path` into a name -> canonicalized
 /// root directory map. Each path must exist and be a directory; failing fast here (at
-/// startup) beats discovering a typo the first time a client tries to send a file.
-fn parse_volumes(raw: &[String]) -> Result<HashMap<String, PathBuf>> {
-    let mut volumes = HashMap::new();
+/// startup) beats discovering a typo the first time a client tries to push.
+pub fn parse_volumes(raw: &[String]) -> Result<Volumes> {
+    let mut volumes = Volumes::new();
     for spec in raw {
         let (name, path) = spec
             .split_once(':')
@@ -41,28 +37,24 @@ fn rsync_on_path() -> bool {
         .is_some_and(|paths| std::env::split_paths(&paths).any(|dir| dir.join("rsync").is_file()))
 }
 
-pub async fn run_server(args: ServerArgs) -> Result<()> {
-    let policy = Arc::new(TargetPolicy::parse(&args.target)?);
-    let volumes = Arc::new(parse_volumes(&args.volumes)?);
-
-    anyhow::ensure!(
-        !policy.is_empty() || !volumes.is_empty(),
-        "no features enabled: pass at least one of -t/--target, -v/--volume"
-    );
-
-    let allowlist = ClientAllowlist::new(&args.allow, config_dir()?.join(authorized_clients::FILENAME))?;
-    allowlist.create_file_if_missing()?;
+/// Runs a server in `mode`, admitting `allow` plus the config file's `[clients]`.
+pub async fn run_server(mode: Mode, allow: Vec<String>) -> Result<()> {
+    // Before the allowlist is read: creates the config file if this is the first run.
+    let secret_key = load_secret_key()?;
+    let allowlist = ClientAllowlist::new(&allow, config_path()?)?;
     let clients = allowlist.count()?;
 
     // Printed rather than logged: the operator should see exactly what is exposed even at
-    // the default (error-only) log level. One line: version, mode, features, client count.
-    let mut summary = format!("{BANNER} server");
-    if !policy.is_empty() {
-        let patterns: Vec<String> = policy.patterns().iter().map(ToString::to_string).collect();
-        summary += &format!(" tcp={}", patterns.join(","));
-    }
-    if !volumes.is_empty() {
-        summary += " file rsync";
+    // the default (error-only) log level. One line: version, mode, what it reaches, client count.
+    let mut summary = format!("{BANNER} {}", mode.label());
+    match &mode {
+        Mode::Socks5(policy) | Mode::Http(policy) => {
+            anyhow::ensure!(!policy.is_empty(), "no targets: pass at least one -t/--target");
+            let patterns: Vec<String> = policy.patterns().iter().map(ToString::to_string).collect();
+            summary += &format!(" targets={}", patterns.join(","));
+        }
+        Mode::Tunnel { host, port } => summary += &format!(" -> {host}:{port}"),
+        Mode::Rsync(volumes) => anyhow::ensure!(!volumes.is_empty(), "no volumes: pass at least one -v/--volume"),
     }
     match clients {
         0 => summary += " clients=any",
@@ -70,22 +62,24 @@ pub async fn run_server(args: ServerArgs) -> Result<()> {
     }
     summary += &banner_suffix();
     println!("{summary}");
-    let mut volumes_sorted: Vec<_> = volumes.iter().collect();
-    volumes_sorted.sort();
-    for (name, path) in volumes_sorted {
-        println!("  volume {name} -> {}", path.display());
+    if let Mode::Rsync(volumes) = &mode {
+        let mut volumes_sorted: Vec<_> = volumes.iter().collect();
+        volumes_sorted.sort();
+        for (name, path) in volumes_sorted {
+            println!("  volume {name} -> {}", path.display());
+        }
+        if !rsync_on_path() {
+            eprintln!("WARNING: rsync was not found on PATH; pushes will fail");
+        }
     }
-    if policy.is_open() {
+    if let Mode::Socks5(policy) | Mode::Http(policy) = &mode
+        && policy.is_open()
+    {
         eprintln!("WARNING: open proxy (-t '*'): clients can reach any host, including localhost and the LAN");
     }
     if clients == 0 {
-        eprintln!("WARNING: no allowlist: anyone with this node id can connect (see --allow, {})", allowlist.file().display());
+        eprintln!("WARNING: no allowlist: anyone with this node id can connect (see --allow, or [clients] in {})", allowlist.file().display());
     }
-    if !volumes.is_empty() && !rsync_on_path() {
-        eprintln!("WARNING: volumes enabled but rsync was not found on PATH; pushes will fail");
-    }
-
-    let secret_key = load_or_create_secret_key(SERVER_KEY_FILE)?;
 
     let endpoint = Endpoint::builder(presets::N0)
         .secret_key(secret_key)
@@ -96,18 +90,11 @@ pub async fn run_server(args: ServerArgs) -> Result<()> {
         .bind()
         .await?;
 
-    // Only enabled features are registered; any other ALPN fails the QUIC handshake.
-    let mut router = Router::builder(endpoint).accept(PING_ALPN, PingServerProtocol);
-    if !policy.is_empty() {
-        router = router.accept(TCP_PROXY_ALPN, ProxyServerProtocol { policy });
-    }
-    if !volumes.is_empty() {
-        router = router
-            .accept(FILE_ALPN, FileServerProtocol { volumes: volumes.clone() })
-            .accept(RSYNC_ALPN, RsyncServerProtocol { volumes: volumes.clone() })
-            .accept(LIST_VOLUMES_ALPN, ListVolumesServerProtocol { volumes });
-    }
-    let router = router.spawn();
+    // Ping (the client's session) plus the one stream protocol, handled according to `mode`.
+    let router = Router::builder(endpoint)
+        .accept(PING_ALPN, PingServerProtocol)
+        .accept(STREAM_ALPN, StreamServerProtocol { mode: Arc::new(mode) })
+        .spawn();
 
     // Essential output, not a log line: the operator needs this id to give to clients,
     // and it must stay visible at the default (error-only) log level.

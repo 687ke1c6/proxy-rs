@@ -13,7 +13,7 @@ FROM alpine AS runner
 ARG UID=1000
 ARG GID=1000
 
-# rsync: needed by `server -v` and `client sync-rsh`.
+# rsync: needed by the `rsync` server mode and by clients pushing with `--pipe`.
 RUN apk add --no-cache ca-certificates rsync
 
 RUN addgroup -g ${GID} rust && \
@@ -24,4 +24,4 @@ COPY --from=builder /usr/local/cargo/bin/proxy-rs /usr/local/bin/proxy-rs
 USER rust
 WORKDIR /home/rust
 
-CMD ["proxy-rs", "server", "-t", "*"]
+CMD ["proxy-rs", "socks5", "-t", "*"]
