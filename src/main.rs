@@ -93,6 +93,10 @@ async fn main() -> Result<()> {
     if let Some(mode) = quiet_stdout {
         subscriber.with_writer(std::io::stderr).init();
         eprintln!("{BANNER} {mode}{}", config::banner_suffix());
+        // whoami prints the id on stdout itself; pipe can't (stdout is the data stream).
+        if mode == "pipe" {
+            eprintln!("{}", config::load_secret_key()?.public());
+        }
     } else {
         subscriber.init();
     }

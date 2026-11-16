@@ -182,6 +182,8 @@ async fn read_ack(recv: &mut RecvStream) -> Result<()> {
 pub async fn run_listen(bind_addr: String, server_node_id_str: Option<String>, name: Option<String>, retry: bool) -> Result<()> {
     let retry_flag = if retry { " retry" } else { "" };
     println!("{BANNER} listen {bind_addr}{retry_flag}{}", banner_suffix());
+    // This node's own id, in full, so it can be copied into a server's --allow.
+    println!("{}", load_secret_key()?.public());
 
     let (node_name, server_node_id) = resolve_node_id(server_node_id_str, name)?;
     let server = server_label(node_name.as_deref(), server_node_id);
@@ -193,7 +195,6 @@ pub async fn run_listen(bind_addr: String, server_node_id_str: Option<String>, n
     // A signal ends the loop below (and drops the session, clearing its spinner).
     let result = until_signal(async {
         endpoint.online().await;
-        info!("Client NodeId: {}", short_id(endpoint.id()));
 
         // Without --retry, the server must be there before we listen (and we exit when it goes).
         // With it, listen right away: forwarded sockets open their own connections, so they don't
